@@ -162,6 +162,90 @@ func TestParseCaptchaV2PageUsesTheTokenizer(t *testing.T) {
 	}
 }
 
+// The page VK actually serves, parsed whole and unaltered. This is the one
+// that matters: before this work it could not be parsed at all, because the
+// parser insisted on a window.init blob and a script tag the page no longer
+// has, and gave up two steps before the proof of work.
+func TestParseCaptchaV2PageOnTheRealPage(t *testing.T) {
+	parsed, err := parseCaptchaV2Page(powFixture(t))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.PowInput != powFixtureInput || parsed.PowDifficulty != powFixtureDiff {
+		t.Errorf("seed = %q/%d, want %q/%d",
+			parsed.PowInput, parsed.PowDifficulty, powFixtureInput, powFixtureDiff)
+	}
+	if parsed.DebugInfo != "da6ed55c-041c-48dc-be66-f4021da07442" {
+		t.Errorf("debugInfo = %q, want the uuid from window.vk", parsed.DebugInfo)
+	}
+	// Absent from this page, and no longer required: the show type and the
+	// slider key come from initSession now.
+	if parsed.Init != nil {
+		t.Errorf("Init = %+v, want nil on a page that carries no window.init", parsed.Init)
+	}
+}
+
+// debug_info is the one value here that is neither computed nor constant: it
+// is read off the page, under a name the obfuscator picks.
+func TestExtractCaptchaDebugInfo(t *testing.T) {
+	const uuid = "da6ed55c-041c-48dc-be66-f4021da07442"
+
+	t.Run("by the name VK uses today", func(t *testing.T) {
+		got, ok := extractCaptchaDebugInfo(powFixture(t))
+		if !ok || got != uuid {
+			t.Errorf("got %q/%v, want %q", got, ok, uuid)
+		}
+	})
+
+	// The name is obfuscator output and will change. The shape will not.
+	t.Run("by shape when the name has changed", func(t *testing.T) {
+		page := strings.Replace(powFixture(t), "brlefapmjnpg:", "qzxkwrtynopq:", 1)
+		got, ok := extractCaptchaDebugInfo(page)
+		if !ok || got != uuid {
+			t.Errorf("got %q/%v, want %q", got, ok, uuid)
+		}
+	})
+
+	t.Run("gives up rather than guess between two", func(t *testing.T) {
+		page := strings.Replace(powFixture(t),
+			"brlefapmjnpg: \""+uuid+"\"",
+			"aaa: \""+uuid+"\",\n bbb: \"11111111-2222-3333-4444-555555555555\"", 1)
+		if got, ok := extractCaptchaDebugInfo(page); ok {
+			t.Errorf("picked %q out of two candidates", got)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		if got, ok := extractCaptchaDebugInfo("<html><body>nothing</body></html>"); ok {
+			t.Errorf("found %q on a page with none", got)
+		}
+	})
+}
+
+// The slider key moved between two field names, and a server that has not
+// moved yet still answers with the old one.
+func TestCaptchaV2SliderKey(t *testing.T) {
+	cases := map[string]struct {
+		raw  any
+		want string
+	}{
+		"settings_key, as VK sends now": {
+			[]any{map[string]any{"type": "slider", "settings_key": "abc"}}, "abc"},
+		"settings, as it was": {
+			[]any{map[string]any{"type": "slider", "settings": "old"}}, "old"},
+		"another component's settings are not the slider's": {
+			[]any{map[string]any{"type": "checkbox", "settings_key": "no"}}, ""},
+		"absent":     {nil, ""},
+		"wrong type": {"a string", ""},
+	}
+
+	for name, tc := range cases {
+		if got := captchaV2SliderKey(tc.raw); got != tc.want {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
 // The old pages are not extinct, and the regexes behind the tokenizer are
 // what still reads them.
 func TestParseCaptchaV2PageStillReadsThePlainForm(t *testing.T) {
