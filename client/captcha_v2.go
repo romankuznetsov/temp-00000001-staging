@@ -466,22 +466,40 @@ func parseCaptchaV2Page(html string) (*captchaV2Page, error) {
 	}
 	page.ScriptURL = match[1]
 
-	if m := reCaptchaV2PowInput.FindStringSubmatch(html); len(m) >= 2 {
-		page.PowInput = m[1]
+	// The tokenizer first, the regexes behind it. VK stopped writing the seed
+	// as `const powInput = "..."` and now passes it to an obfuscated call
+	// whose spelling changes; captcha_pow.go reads it by structure instead.
+	// The regexes stay because they still answer for any page that has not
+	// been through the obfuscator, and because falling back cannot be worse
+	// than what happened before.
+	if seed, ok := extractPowSeed(html); ok {
+		page.PowInput = seed.PowInput
+		page.PowDifficulty = seed.Difficulty
+		log.Printf("[CAPTCHA] v2 pow seed found by %s (difficulty %d)", seed.Source, seed.Difficulty)
+	}
+
+	if page.PowInput == "" {
+		if m := reCaptchaV2PowInput.FindStringSubmatch(html); len(m) >= 2 {
+			page.PowInput = m[1]
+		}
 	}
 	if page.PowInput == "" {
 		return page, nil
 	}
 
-	match = reCaptchaV2Difficulty.FindStringSubmatch(html)
-	if len(match) < 2 {
-		return nil, errors.New("captcha difficulty const not found")
+	// The call the tokenizer reads carries its own difficulty; only a page
+	// that came from the regex, or one whose call had none, needs this.
+	if page.PowDifficulty == 0 {
+		match = reCaptchaV2Difficulty.FindStringSubmatch(html)
+		if len(match) < 2 {
+			return nil, errors.New("captcha difficulty const not found")
+		}
+		difficulty, err := strconv.Atoi(match[1])
+		if err != nil || difficulty <= 0 {
+			return nil, fmt.Errorf("invalid captcha difficulty %q", match[1])
+		}
+		page.PowDifficulty = difficulty
 	}
-	difficulty, err := strconv.Atoi(match[1])
-	if err != nil || difficulty <= 0 {
-		return nil, fmt.Errorf("invalid captcha difficulty %q", match[1])
-	}
-	page.PowDifficulty = difficulty
 	return page, nil
 }
 
