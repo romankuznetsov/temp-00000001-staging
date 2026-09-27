@@ -246,8 +246,20 @@ const netifdTrafficTick = 5 * time.Second
 // a reply is inbound traffic like any other, which puts the question beyond
 // inference: either the tunnel delivers the answer or it delivers nothing.
 const (
-	netifdProbeAfter   = 30 * time.Second
-	netifdStallTimeout = 2 * time.Minute
+	netifdProbeAfter = 30 * time.Second
+	// Long, because giving up costs more than waiting does. Rebuilding the
+	// interface takes one to three and a half minutes before the workers are
+	// back, so a gap shorter than that is cheaper to sit through than to act
+	// on - and on a mobile uplink the gaps are long. Measured on a router
+	// behind a phone hotspot: inbound stopped for 124 seconds and then
+	// resumed on its own, with two minutes of unanswered probes in the
+	// middle. At the old two minutes this watch was restarting tunnels that
+	// were about to recover, and each restart costs the server another set
+	// of sessions to time out.
+	//
+	// The fault this exists for looked nothing like that: seven and a half
+	// hours of silence on a wired router, which five minutes still catches.
+	netifdStallTimeout = 5 * time.Minute
 	// How long to keep asking for a first answer before concluding that this
 	// server does not answer echoes at all. Long enough to cover the tunnel
 	// coming up, which is the device appearing, the sessions establishing and
