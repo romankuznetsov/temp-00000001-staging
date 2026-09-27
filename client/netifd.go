@@ -264,20 +264,39 @@ const netifdTrafficTick = 5 * time.Second
 const (
 	netifdProbeAfter   = 30 * time.Second
 	netifdStallTimeout = 2 * time.Minute
+	// How long to keep asking for a first answer before concluding that this
+	// server does not answer echoes at all. Long enough to cover the tunnel
+	// coming up, which is the device appearing, the sessions establishing and
+	// the server assigning an address.
+	netifdProbeArmFor = 5 * time.Minute
 )
 
 // What the watch does at a given moment. Pulled out of the loop and given a
 // test because getting it wrong takes down a working tunnel.
 //
-// idle is how long since anything at all arrived. answered says the server has
-// replied to a probe at least once: a server that never has may simply not
-// answer them, and taking its tunnel down every couple of minutes over that
-// would be worse than the fault being looked for.
-func netifdWatchAction(idle time.Duration, answered bool) (probe, giveUp bool) {
+// idle is how long since anything at all arrived, age how long the client has
+// been running, and answered whether the server has ever replied to a probe.
+//
+// Silence only means something once the server has answered once: one that
+// never does may simply not reply to an echo, and taking its tunnel down every
+// two minutes over that would be worse than the fault being looked for.
+//
+// Which is why the asking cannot wait for silence. A tunnel that dies is a
+// tunnel that goes quiet, so a probe sent only after things go quiet is, on a
+// tunnel that has died, also the first probe ever sent - and there is nothing
+// to compare it against. Found on a router: a tunnel carried 480MB, stopped,
+// and the watch sat disarmed through eight minutes of unanswered probes,
+// because none had been sent during the part where it was working. So while
+// there is no answer yet the probe goes out on every tick, working or not,
+// until the server answers or the window closes.
+func netifdWatchAction(idle, age time.Duration, answered bool) (probe, giveUp bool) {
+	if !answered {
+		return age < netifdProbeArmFor, false
+	}
 	if idle < netifdProbeAfter {
 		return false, false
 	}
-	return true, answered && idle >= netifdStallTimeout
+	return true, idle >= netifdStallTimeout
 }
 
 func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, stats *Stats, device string, server net.IP) {
@@ -302,7 +321,8 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 		// Counted from the client starting rather than from the first byte, so
 		// a tunnel that never delivers anything is still probed. Escalating on
 		// one is a separate question, and netifdWatchAction answers it.
-		lastSeen := time.Now()
+		started := time.Now()
+		lastSeen := started
 
 		for {
 			select {
@@ -332,7 +352,8 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 			}
 
 			idle := now.Sub(lastSeen)
-			shouldProbe, giveUp := netifdWatchAction(idle, probe != nil && probe.everAnswered())
+			shouldProbe, giveUp := netifdWatchAction(idle, now.Sub(started),
+				probe != nil && probe.everAnswered())
 
 			if giveUp {
 				log.Printf("[NETIFD] nothing has come back through the tunnel for %v, and the server has stopped answering it, giving the interface up so it is rebuilt",
