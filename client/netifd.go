@@ -311,6 +311,33 @@ func netifdWatchAction(idle, age time.Duration, answered bool) (probe, giveUp bo
 	return true, idle >= netifdStallTimeout
 }
 
+// The same question for a wireguard-mode tunnel, which cannot be asked the
+// same way: it has no device to bind a probe to, only a placeholder, and the
+// relay speaks no protocol of its own to ask with.
+//
+// It does not need one. What crosses the relay is WireGuard, and a WireGuard
+// peer with PersistentKeepalive sends every 25 seconds whether or not anybody
+// is using the tunnel - the server issues 25 in the configuration it hands
+// out. So the traffic the RAW-IP watch has to manufacture is already there,
+// and the question becomes whether what we are sending is being answered.
+//
+// This is inference, which failed once before: an earlier watch decided a
+// tunnel was dead from the LAN sending while nothing came back, and missed a
+// seven-hour outage because the router had not been sending. The difference
+// here is the keepalive. There, silence outbound meant nobody was using the
+// tunnel and nothing could be concluded; here, silence outbound means no
+// WireGuard interface is pointed at the relay - in which case there is
+// nothing to rescue and nothing should happen. Both readings are correct,
+// which is what makes the inference safe in this mode and not in the other.
+//
+// idleOut is deliberately compared against the same timeout rather than the
+// keepalive interval: an interface that is sending is sending far more often
+// than that, and a margin costs nothing against the one thing this must never
+// do, which is take down a tunnel nobody has finished setting up.
+func netifdRelayStalled(idleIn, idleOut time.Duration) bool {
+	return idleIn >= netifdStallTimeout && idleOut < netifdStallTimeout
+}
+
 func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, stats *Stats, device string, server net.IP) {
 	if !netifdManaged || stats == nil {
 		return
@@ -336,6 +363,12 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 		started := time.Now()
 		lastSeen := started
 
+		// The outbound side, which only the wireguard-mode branch reads: a
+		// relay with nothing pointed at it never sends, and must never be
+		// mistaken for one whose far end has stopped answering.
+		var lastSent int64
+		sentAt := started
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -354,12 +387,20 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 			// it can tell "nothing yet" from a file nobody has updated.
 			writeNetifdRunFile("traffic", fmt.Sprintf("%d %d\n", seenAt, total))
 
-			// Nothing to probe through. A wireguard-mode tunnel carries no
-			// traffic of its own: it relays a local port, its device is a
-			// placeholder, and whether the far end still answers is
-			// WireGuard's own keepalive to establish. The figure above is
-			// still written, so the page can say when something last arrived.
+			// A wireguard-mode tunnel, which is watched by what it is already
+			// carrying rather than by a probe it has no device to send. See
+			// netifdRelayStalled.
 			if device == "" {
+				if sent := stats.TotalBytesUp.Load(); sent != lastSent {
+					lastSent = sent
+					sentAt = now
+				}
+				if netifdRelayStalled(now.Sub(lastSeen), now.Sub(sentAt)) {
+					log.Printf("[NETIFD] the relay has been sending for %v with nothing coming back, giving the interface up so it is rebuilt",
+						now.Sub(lastSeen).Truncate(time.Second))
+					cancel()
+					return
+				}
 				continue
 			}
 

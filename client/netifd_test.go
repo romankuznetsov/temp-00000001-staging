@@ -122,6 +122,49 @@ func TestNetifdWatchAction(t *testing.T) {
 	}
 }
 
+// The wireguard-mode watch has no probe to fall back on, so its whole safety
+// rests on telling "we are sending and nothing comes back" from "nothing is
+// pointed at this relay". Getting the second one wrong would restart a tunnel
+// every five minutes for as long as it went unused.
+func TestNetifdRelayStalled(t *testing.T) {
+	const busy = time.Second
+	const quiet = netifdStallTimeout
+	const nearly = netifdStallTimeout - time.Second
+
+	tests := []struct {
+		name    string
+		idleIn  time.Duration
+		idleOut time.Duration
+		want    bool
+	}{
+		// The fault: WireGuard is keepaliving through the relay and the far
+		// end has stopped delivering.
+		{"sending, nothing coming back", quiet, busy, true},
+		{"long past it", time.Hour, busy, true},
+
+		// No WireGuard interface pointed at the relay yet, or one that is
+		// down. Nothing is crossing in either direction and there is nothing
+		// to rescue.
+		{"nothing pointed at the relay", quiet, quiet, false},
+		{"neither direction, for hours", time.Hour, time.Hour, false},
+
+		// Working.
+		{"both directions moving", busy, busy, false},
+		{"inbound just short of the timeout", nearly, busy, false},
+
+		// Inbound stalled and outbound stopping at the same time is the
+		// interface being taken down, not the tunnel failing.
+		{"outbound stopped too, right at the edge", quiet, quiet - time.Second, true},
+		{"outbound stopped first", quiet, quiet + time.Minute, false},
+	}
+
+	for _, tc := range tests {
+		if got := netifdRelayStalled(tc.idleIn, tc.idleOut); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A wrong checksum is dropped by the far end in silence, which would read
 // here as a server that never answers.
 func TestICMPEcho(t *testing.T) {
