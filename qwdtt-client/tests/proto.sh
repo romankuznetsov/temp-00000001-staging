@@ -251,10 +251,16 @@ check "a teardown of a tunnel that still exists" "$got" "killed: qwdtt0"
 # The SNAT rule names the address the server assigned, so it is worth exactly
 # as much as the tunnel is: left behind, it would rewrite the source of
 # whatever took the device's name next.
+#
+# The run files go by glob rather than by name. Nothing here has created any,
+# so it reaches rm unexpanded, which -f makes a no-op; what is being checked
+# is that the teardown asks for all of them rather than the three it used to
+# list, two of which had since been joined by others - including the one
+# holding the WireGuard private key the server issued.
 got=$(proto_qwdtt_teardown gone 2>&1)
 check "a teardown of a section that has been deleted" "$got" 'killed: gone
 dropped: gone
-removed: -f /var/run/qwdtt/gone.counters /var/run/qwdtt/gone.workers /var/run/qwdtt/gone.relays
+removed: -f /var/run/qwdtt/gone.*
 deleted: firewall.gone_snat'
 
 # --- the option list the uci-defaults script reads --------------------------

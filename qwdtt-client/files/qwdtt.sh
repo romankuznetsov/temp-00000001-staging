@@ -221,7 +221,13 @@ proto_qwdtt_setup() {
 	# Built with set -- rather than one expansion per option: a value that
 	# happens to contain a space stays a single argument, and no shell ever
 	# re-parses the password.
-	set -- -netifd \
+	set -- -netifd
+	if [ "$mode" = wireguard ]; then
+		set -- "$@" -mode vpn -listen "127.0.0.1:${listen_port:-9000}"
+	else
+		set -- "$@" -mode rawtun -tun-name "$config"
+	fi
+	set -- "$@" \
 		-peer "${peer_host}:${peer_port}" \
 		-vk "$hashes" \
 		-password "$password" \
@@ -232,11 +238,6 @@ proto_qwdtt_setup() {
 		-captcha-mode "${captcha_mode:-auto}" \
 		-vk-auth "${vk_auth:-anonymous}" \
 		-vk-anon-path "${vk_anon_path:-vkcalls}"
-	if [ "$mode" = wireguard ]; then
-		set -- "$@" -mode vpn -listen "127.0.0.1:${listen_port:-9000}"
-	else
-		set -- "$@" -mode rawtun -tun-name "$config"
-	fi
 	[ -z "$vk_creds_file" ] || set -- "$@" -vk-creds-file "$vk_creds_file"
 	# Only passed when on: Go's flag package reads a bare -notls as true.
 	[ "$no_dtls" != 1 ] || set -- "$@" -notls
@@ -276,10 +277,16 @@ proto_qwdtt_teardown() {
 		[ "$(uci -q get "network.$config.mode")" != wireguard ] && return 0
 
 	drop_device "$config"
-	# What the up-script and the client left for the status page to read. Both
-	# describe a tunnel that is gone, and the counter baseline would otherwise
-	# be subtracted from whatever took the device's name next.
-	rm -f "/var/run/qwdtt/$config".counters "/var/run/qwdtt/$config".workers "/var/run/qwdtt/$config".relays
+	# What the up-script and the client left for the status page to read. All
+	# of it describes a tunnel that is gone: the counter baseline would be
+	# subtracted from whatever took the device's name next, and the WireGuard
+	# configuration the server issued holds a private key that has no reason
+	# to outlive the tunnel it was issued to.
+	#
+	# Matched by the interface's own prefix rather than listed, because the
+	# list was already a suffix out of date twice over by the time anyone
+	# noticed.
+	rm -f "/var/run/qwdtt/$config".*
 	# The SNAT rule the up-script wrote names an address nothing answers to any
 	# more, so it goes with the tunnel rather than outliving it.
 	uci -q delete "firewall.${config}_snat" || return 0

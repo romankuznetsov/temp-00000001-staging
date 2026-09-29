@@ -39,6 +39,9 @@ msgstr "Сессии установлены"
 msgid "Reconnects"
 msgstr "Переподключений"
 
+msgid "Local endpoint"
+msgstr "Локальная точка подключения"
+
 msgid "Captchas"
 msgstr "Капчи"
 
