@@ -302,6 +302,10 @@ PersistentKeepalive = 25
 подключении; переносить из него нужно один раз, а сам интерфейс WireGuard
 хранит свою копию в `/etc/config/network`.
 
+Ставить WireGuard отдельно не нужно: `kmod-wireguard` и `wireguard-tools`
+идут зависимостями `qwdtt-client`, а протокол WireGuard в редакторе
+интерфейсов (`luci-proto-wireguard`) - зависимостью `luci-proto-qwdtt`.
+
 ### Если на роутере уже есть mwan3, pbr или WireGuard
 
 Обе эти проверки стоит сделать до того, как туннель понадобится: в обоих
