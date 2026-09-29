@@ -147,7 +147,7 @@ function captchasOf(net) {
    of nothing arriving the client sends an echo through the tunnel to the
    server and the answer lands here like any other traffic, so on a tunnel
    that is merely unused this now sits under a minute. Climbing past that
-   means the tunnel is not answering, and the client gives it up at two
+   means the tunnel is not answering, and the client gives it up at five
    minutes and has netifd rebuild it - so a reading much above that is the
    page having caught it mid-rebuild. */
 function idleOf(net) {

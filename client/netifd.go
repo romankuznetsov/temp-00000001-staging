@@ -291,7 +291,7 @@ const (
 //
 // Silence only means something once the server has answered once: one that
 // never does may simply not reply to an echo, and taking its tunnel down every
-// two minutes over that would be worse than the fault being looked for.
+// five minutes over that would be worse than the fault being looked for.
 //
 // Which is why the asking cannot wait for silence. A tunnel that dies is a
 // tunnel that goes quiet, so a probe sent only after things go quiet is, on a
@@ -334,8 +334,21 @@ func netifdWatchAction(idle, age time.Duration, answered bool) (probe, giveUp bo
 // keepalive interval: an interface that is sending is sending far more often
 // than that, and a margin costs nothing against the one thing this must never
 // do, which is take down a tunnel nobody has finished setting up.
-func netifdRelayStalled(idleIn, idleOut time.Duration) bool {
-	return idleIn >= netifdStallTimeout && idleOut < netifdStallTimeout
+//
+// received is the same gate the RAW-IP watch applies through `answered`, and
+// for the same reason: silence means the far end stopped only if it ever
+// started. A relay that has never delivered a byte is far more likely to be
+// misconfigured than broken - a peer port that is not the server's listener,
+// or, worse, a WireGuard interface above with the wrong keys, which keeps
+// handshaking through a relay that is working perfectly while nothing can
+// come back. Restarting fixes none of those, and costs the server another
+// set of sessions every five minutes for as long as it is wrong.
+//
+// Measured on a router with the relays blocked from the start: without this
+// the tunnel gave itself up at 5m0s having received nothing at all, which is
+// the case the RAW-IP watch is explicitly written not to act on.
+func netifdRelayStalled(idleIn, idleOut time.Duration, received bool) bool {
+	return received && idleIn >= netifdStallTimeout && idleOut < netifdStallTimeout
 }
 
 func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, stats *Stats, device string, server net.IP) {
@@ -395,7 +408,7 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 					lastSent = sent
 					sentAt = now
 				}
-				if netifdRelayStalled(now.Sub(lastSeen), now.Sub(sentAt)) {
+				if netifdRelayStalled(now.Sub(lastSeen), now.Sub(sentAt), total > 0) {
 					log.Printf("[NETIFD] the relay has been sending for %v with nothing coming back, giving the interface up so it is rebuilt",
 						now.Sub(lastSeen).Truncate(time.Second))
 					cancel()

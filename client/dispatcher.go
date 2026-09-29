@@ -94,6 +94,10 @@ type WorkerSlot struct {
 }
 
 type Dispatcher struct {
+	// How many packets from the TUN were dropped because every worker was
+	// overloaded. Counted because the symptom is indistinguishable from the
+	// TUN not being read at all - the server sees no packets either way -
+	// and the two are fixed differently.
 	tunDroppedCount uint64
 
 	localConn     net.PacketConn
@@ -114,13 +118,6 @@ type Dispatcher struct {
 	firstPktUp    uint32
 	firstPktDown  uint32
 	firstWriteErr uint32
-
-	// TUN-path diagnostics (rawtun): how many packets were really read from the
-	// TUN, how many went to the workers (SendCh/PrioCh), and how many were
-	// dropped silently because every worker was overloaded (line ~358, putPktBuf
-	// with no log). Needed to tell "traffic from the TUN is not read at all"
-	// from "it is read, but dropped by overloaded workers" - both look the same
-	// from outside (the server sees no packets), but they are fixed differently.
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {

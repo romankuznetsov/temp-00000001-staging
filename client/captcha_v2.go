@@ -44,7 +44,6 @@ var (
 	errCaptchaV2Bot          = errors.New("captcha bot challenge")
 	errCaptchaSessionExpired = errors.New("captcha session expired, need fresh challenge")
 
-	captchaV2MaxAttempts     = 2
 	captchaV2MaxSliderChecks = 2
 
 	captchaV2HeaderOrder = []string{
