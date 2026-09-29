@@ -103,6 +103,8 @@ proto_qwdtt_init_config() {
 	proto_config_add_string  "vk_auth"
 	proto_config_add_string  "vk_anon_path"
 	proto_config_add_string  "vk_creds_file"
+	proto_config_add_string  "vk_client_id"
+	proto_config_add_string  "vk_client_secret"
 	proto_config_add_boolean "no_dtls"
 	proto_config_add_boolean "turn_tcp"
 }
@@ -130,11 +132,12 @@ QWDTT_PEER_PORT_wireguard=56000
 proto_qwdtt_setup() {
 	local config="$1"
 	local mode peer_host peer_port listen_port password device_id workers go_dns obfs
-	local captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
-	local hashes ip4table defaultroute owner
+	local captcha_mode vk_auth vk_anon_path vk_creds_file vk_client_id vk_client_secret
+	local no_dtls turn_tcp hashes ip4table defaultroute owner
 
 	json_get_vars mode peer_host peer_port listen_port password device_id workers go_dns obfs \
-		captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
+		captcha_mode vk_auth vk_anon_path vk_creds_file vk_client_id vk_client_secret \
+		no_dtls turn_tcp
 
 	mode="${mode:-rawtun}"
 	case "$mode" in
@@ -164,6 +167,16 @@ proto_qwdtt_setup() {
 	[ -n "$hashes" ] || {
 		logger -t qwdtt "network.$config.hash is empty"
 		proto_notify_error "$config" "MISSING_HASH"
+		proto_block_restart "$config"
+		return 1
+	}
+	# Every packet is sealed with a key derived from this, so the client has
+	# nothing to do without it and exits - and netifd starts it again the
+	# instant it does, with no backoff. Measured on a router: 349 starts in
+	# thirty seconds, with the interface page showing nothing at all.
+	[ -n "$password" ] || {
+		logger -t qwdtt "network.$config.password is not set"
+		proto_notify_error "$config" "MISSING_PASSWORD"
 		proto_block_restart "$config"
 		return 1
 	}
@@ -213,6 +226,13 @@ proto_qwdtt_setup() {
 	# its own name, so nothing else tells two tunnels apart.
 	proto_export "INTERFACE=$config"
 	proto_export "TZ=$(uci -q get system.@system[0].zonename)"
+	# Secrets travel in the environment, not on the command line:
+	# /proc/<pid>/cmdline is readable by every process on the router and
+	# /proc/<pid>/environ by root alone. The password used to be in the
+	# readable one, and in every `ps` an operator pasted into a bug report.
+	proto_export "QWDTT_PASSWORD=$password"
+	[ -z "$vk_client_id" ] || proto_export "QWDTT_VK_CLIENT_ID=$vk_client_id"
+	[ -z "$vk_client_secret" ] || proto_export "QWDTT_VK_CLIENT_SECRET=$vk_client_secret"
 
 	# Written out rather than as a shell default, because the fallback is one
 	# port per mode rather than one port. The two are named above.
@@ -230,7 +250,6 @@ proto_qwdtt_setup() {
 	set -- "$@" \
 		-peer "${peer_host}:${peer_port}" \
 		-vk "$hashes" \
-		-password "$password" \
 		-device-id "$device_id" \
 		-n "${workers:-9}" \
 		-go-dns "${go_dns:-yandex}" \

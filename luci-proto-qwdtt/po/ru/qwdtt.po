@@ -161,6 +161,9 @@ msgstr "Не задан адрес сервера"
 msgid "No VK call hash is set"
 msgstr "Не задан ни один хеш звонка VK"
 
+msgid "No connection password is set"
+msgstr "Не задан пароль подключения"
+
 msgid "Interface name longer than 15 characters (the device name limit)"
 msgstr "Имя интерфейса длиннее 15 символов (предел имени устройства)"
 

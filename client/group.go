@@ -273,7 +273,10 @@ func WorkerGroup(
 
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
-					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+					// "quota" is either the relay's own reason text or the "TURN
+					// quota:" the session wraps a 486 in; the bare code is not
+					// matched, because it is also three digits of a port number.
+					isTurnQuota := strings.Contains(errStrLower, "quota")
 					quotaRetry = isTurnQuota
 					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
 						strings.Contains(errStrLower, "turn allocate auth") ||

@@ -110,10 +110,13 @@ check() {
 
 # --- the command line -------------------------------------------------------
 
+# The password is in the environment and nowhere on the command line:
+# /proc/<pid>/cmdline is world-readable and /proc/<pid>/environ is not.
 got=$(proto_qwdtt_setup qwdtt0 2>&1)
 want='export: INTERFACE=qwdtt0
 export: TZ=Europe/Moscow
-run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name qwdtt0 -peer vpn1.example:56003 -vk aaa,bbb -password p1 -device-id openwrt-qwdtt0 -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
+export: QWDTT_PASSWORD=p1
+run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name qwdtt0 -peer vpn1.example:56003 -vk aaa,bbb -device-id openwrt-qwdtt0 -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
 check "a complete tunnel" "$got" "$want"
 
 # Every default here is one the handler supplies rather than the client, so a
@@ -123,22 +126,41 @@ SECTION=work
 got=$(proto_qwdtt_setup work 2>&1)
 want='export: INTERFACE=work
 export: TZ=Europe/Moscow
-run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name work -peer vpn2.example:56003 -vk ccc -password p2 -device-id openwrt-work -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
+export: QWDTT_PASSWORD=p2
+run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name work -peer vpn2.example:56003 -vk ccc -device-id openwrt-work -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
 check "no peer_port falls back to 56003, and every optional value left unset" "$got" "$want"
 
 # The three that are appended rather than always passed. -notls and -turn-tcp
 # are bare flags, which Go's flag package reads as true, so passing them with a
-# 0 would switch them on.
+# 0 would switch them on. The VK application pair goes the way the password
+# does, and for the same reason.
 set_cfg work.vk_creds_file '/etc/qwdtt/creds with a space.json'
 set_cfg work.no_dtls 1
 set_cfg work.turn_tcp 0
-got=$(proto_qwdtt_setup work 2>&1 | sed -n 's/^run: //p')
+set_cfg work.vk_client_id 123456
+set_cfg work.vk_client_secret 'sekret with a space'
+got=$(proto_qwdtt_setup work 2>&1)
 case $got in
 *"-vk-anon-path vkcalls -vk-creds-file /etc/qwdtt/creds with a space.json -notls") ;;
 *)
 	echo "the optional flags:"
 	echo "--- got"
 	echo "$got"
+	fail=1 ;;
+esac
+case $got in
+*"export: QWDTT_VK_CLIENT_ID=123456"*"export: QWDTT_VK_CLIENT_SECRET=sekret with a space"*) ;;
+*)
+	echo "the VK application pair was not exported:"
+	echo "$got"
+	fail=1 ;;
+esac
+# The run line alone: the exports above it are allowed to carry them.
+run=$(echo "$got" | sed -n 's/^run: //p')
+case $run in
+*-password*|*-vk-client*|*sekret*)
+	echo "a secret reached the command line:"
+	echo "$run"
 	fail=1 ;;
 esac
 
@@ -154,7 +176,7 @@ refusal() {
 	fail=1
 }
 
-SECTIONS="$SECTIONS noserver nohash waytoolongfortun mainte twin loose nodevice sleeper waker"
+SECTIONS="$SECTIONS noserver nohash nopass waytoolongfortun mainte twin loose nodevice sleeper waker"
 
 set_cfg noserver.proto qwdtt
 set_cfg noserver.ip4table 51822
@@ -166,9 +188,20 @@ set_cfg nohash.ip4table 51823
 set_cfg nohash.peer_host vpn3.example
 refusal "a tunnel with no hashes" nohash MISSING_HASH
 
+# Without this the client exits at once and netifd starts it again at once,
+# with no backoff and nothing on the interface page: measured at 349 starts
+# in thirty seconds.
+set_cfg nopass.proto qwdtt
+set_cfg nopass.ip4table 51827
+set_cfg nopass.peer_host vpn9.example
+set_cfg nopass.hash jjj
+set_cfg nopass.device_id openwrt-nopass
+refusal "a tunnel with no password" nopass MISSING_PASSWORD
+
 set_cfg waytoolongfortun.proto qwdtt
 set_cfg waytoolongfortun.ip4table 51824
 set_cfg waytoolongfortun.peer_host vpn4.example
+set_cfg waytoolongfortun.password p4
 set_cfg waytoolongfortun.hash eee
 refusal "a name no interface can have" waytoolongfortun NAME_TOO_LONG
 
@@ -177,6 +210,7 @@ refusal "a name no interface can have" waytoolongfortun NAME_TOO_LONG
 # the tunnel it is carrying.
 set_cfg mainte.proto qwdtt
 set_cfg mainte.peer_host vpn5.example
+set_cfg mainte.password p5
 set_cfg mainte.hash fff
 refusal "a default route with no table to put it in" mainte MISSING_IP4TABLE
 
@@ -184,6 +218,7 @@ refusal "a default route with no table to put it in" mainte MISSING_IP4TABLE
 # the operator writes the routes and the table is theirs to choose.
 set_cfg loose.proto qwdtt
 set_cfg loose.peer_host vpn6.example
+set_cfg loose.password p6
 set_cfg loose.device_id openwrt-loose
 set_cfg loose.hash ggg
 set_cfg loose.defaultroute 0
@@ -202,6 +237,7 @@ esac
 set_cfg nodevice.proto qwdtt
 set_cfg nodevice.ip4table 51826
 set_cfg nodevice.peer_host vpn8.example
+set_cfg nodevice.password p8
 set_cfg nodevice.hash iii
 refusal "a tunnel with no device_id" nodevice MISSING_DEVICE_ID
 
@@ -211,6 +247,7 @@ refusal "a tunnel with no device_id" nodevice MISSING_DEVICE_ID
 set_cfg twin.proto qwdtt
 set_cfg twin.ip4table 51825
 set_cfg twin.peer_host vpn7.example
+set_cfg twin.password p7
 set_cfg twin.hash hhh
 set_cfg twin.device_id openwrt-qwdtt0
 refusal "two tunnels with one device_id" twin DUPLICATE_DEVICE_ID
@@ -222,12 +259,14 @@ refusal "two tunnels with one device_id" twin DUPLICATE_DEVICE_ID
 set_cfg sleeper.proto qwdtt
 set_cfg sleeper.ip4table 51828
 set_cfg sleeper.peer_host vpnA.example
+set_cfg sleeper.password pA
 set_cfg sleeper.hash kkk
 set_cfg sleeper.device_id openwrt-shared
 set_cfg sleeper.disabled 1
 set_cfg waker.proto qwdtt
 set_cfg waker.ip4table 51829
 set_cfg waker.peer_host vpnB.example
+set_cfg waker.password pB
 set_cfg waker.hash lll
 set_cfg waker.device_id openwrt-shared
 SECTION=waker
