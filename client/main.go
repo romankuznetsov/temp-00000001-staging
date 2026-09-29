@@ -437,7 +437,14 @@ func main() {
 	log.Println("[CLIENT] ═══════════════════════════════════════")
 
 	stats := NewStats()
-	startNetifdTrafficWatch(ctx, cancel, stats, *tunName, peer.IP)
+	// Only a rawtun tunnel has a device of its own to send the probe through;
+	// the others have nothing to bind it to, and -tun-name then names a device
+	// that was never created.
+	probeDevice := ""
+	if activeConnMode == "rawtun" {
+		probeDevice = *tunName
+	}
+	startNetifdTrafficWatch(ctx, cancel, stats, probeDevice, peer.IP)
 
 	var disp *Dispatcher
 	if activeConnMode == "rawtun" {
@@ -551,10 +558,11 @@ func main() {
 				fmt.Printf("║ %-44s ║\n", line)
 			}
 			fmt.Println("╚══════════════════════════════════════════════╝")
-			if err := os.WriteFile("wg-turn.conf", []byte(finalConf+"\n"), 0600); err != nil {
+			confPath := netifdWGConfPath()
+			if err := os.WriteFile(confPath, []byte(finalConf+"\n"), 0600); err != nil {
 				log.Printf("[CONFIG] Error saving: %v", err)
 			} else {
-				log.Println("[CONFIG] Saved to wg-turn.conf")
+				log.Printf("[CONFIG] Saved to %s", confPath)
 			}
 
 			if activeConnMode == "socks" {

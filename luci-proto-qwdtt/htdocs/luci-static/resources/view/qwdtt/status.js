@@ -43,13 +43,36 @@ function tunnels() {
 	});
 }
 
+/* Kept in step with QWDTT_PEER_PORT_* in the protocol handler, which is what
+   applies them, and with PEER_PORT in protocol/qwdtt.js, which offers them. */
+var PEER_PORT = { rawtun: '56003', wireguard: '56000' };
+var RELAY_PORT = '9000';
+
+function modeOf(net) {
+	return uci.get('network', net.getName(), 'mode') || 'rawtun';
+}
+
+/* The port is filled in when the tunnel leaves it unset, because the column is
+   there to say where this tunnel goes and the handler's fallback is part of
+   that - and it is not one number but one per mode. */
 function peerOf(net) {
 	var host = net._get('peer_host');
-	var port = net._get('peer_port');
+	var port = net._get('peer_port') || PEER_PORT[modeOf(net)];
 
 	if (!host)
 		return '-';
-	return port ? host + ':' + port : host;
+	return host + ':' + port;
+}
+
+/* What a WireGuard-mode tunnel exists to provide: the address a WireGuard
+   interface is pointed at as its peer. Nothing else on the router says what it
+   ended up being, and the tunnel carries no traffic of its own to show
+   instead. */
+function endpointOf(net) {
+	if (modeOf(net) != 'wireguard')
+		return null;
+	return '127.0.0.1:%s'.format(
+		uci.get('network', net.getName(), 'listen_port') || RELAY_PORT);
 }
 
 /* What the server knows this tunnel as. Two tunnels sharing one are a single
@@ -148,11 +171,21 @@ function since(now, base) {
    label and value pairs and drops every pair whose value is null, which is how
    the counters disappear for a tunnel that has not come up yet.
 
-   Up means the tunnel is carrying traffic, not that the client is running: the
-   client creates its device and reports an address only once the server has
-   answered, so everything before that is "connecting". */
+   For a RAW-IP tunnel, up means it is carrying traffic rather than that the
+   client is running: the client creates its device and reports an address only
+   once the server has answered, so everything before that is "connecting". A
+   WireGuard-mode one has no address to wait for and is reported up as soon as
+   it starts, so there "up" says the relay is listening and the rows below -
+   the sessions, what last arrived, the worker count beside them - are what say
+   whether anything is getting through. */
 function stateOf(net) {
-	var device = net.getL3Device() || net.getDevice();
+	/* Only a RAW-IP tunnel has counters worth reading. The device of a
+	   WireGuard-mode one is the placeholder netifd needs to report the
+	   interface up at all and carries nothing, so its totals would sit at zero
+	   beside a relay that is working - and what does carry the traffic is the
+	   WireGuard interface, which has a page of its own. */
+	var device = modeOf(net) == 'rawtun'
+		? (net.getL3Device() || net.getDevice()) : null;
 
 	if (!net.isUp()) {
 		/* Whatever netifd was told about why. Without this the column said
@@ -199,6 +232,7 @@ function stateOf(net) {
 		   pair is what matters: the same count on both sides is the solver
 		   keeping up, and a gap is what leaves the tunnel waiting. */
 		_('Captchas'), captchasOf(net),
+		_('Local endpoint'), endpointOf(net),
 		_('IPv4'), (net.getIPAddrs() || [])[0] || null,
 		_('RX'), device ? '%.2mB (%d %s)'.format(
 			since(device.getRXBytes(), base.rx_bytes),
@@ -254,6 +288,14 @@ var CHECK_TARGETS = {
 };
 
 function checkSection(nets) {
+	/* ping is bound to the tunnel with -I, and a WireGuard-mode tunnel has no
+	   device to bind to: it is a relay on 127.0.0.1, and what carries traffic
+	   is the WireGuard interface pointed at it. That one is checked on Network
+	   -> Diagnostics like any other interface. */
+	nets = nets.filter(function(net) {
+		return modeOf(net) == 'rawtun';
+	});
+
 	if (!nets.length)
 		return E([]);
 

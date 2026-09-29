@@ -64,12 +64,35 @@ drop_device() {
 	ip link del "$1" 2>/dev/null
 }
 
+# What a wireguard-mode tunnel is reported up on.
+#
+# netifd refuses a protocol update that names no device when the interface has
+# none of its own, so an interface with nothing to name cannot be reported up
+# at all: it stays in setup for ever, and every page calls a relay that is
+# working "connecting". Naming a device that already exists is worse than it
+# sounds - with lo, firewall4 resolved the zone's network list to it and put
+# loopback in a zone whose input policy is DROP, MTU mangling and all.
+#
+# So the interface gets a device of its own, carrying nothing. Named after the
+# interface, like the TUN device of a RAW-IP tunnel, which is what keeps it
+# inside the qwdtt+ firewall zone instead of landing it somewhere unexpected.
+#
+# A TUN device with nothing attached to it rather than a dummy, which would be
+# the obvious choice: dummy needs kmod-dummy, which an OpenWrt image does not
+# carry by default, while kmod-tun is already required for the RAW-IP shape.
+relay_device() {
+	[ -e "/sys/class/net/$1" ] || ip tuntap add mode tun "$1" || return 1
+	ip link set "$1" up
+}
+
 proto_qwdtt_init_config() {
 	no_device=1
 	available=1
 
+	proto_config_add_string  "mode"
 	proto_config_add_string  "peer_host"
 	proto_config_add_int     "peer_port"
+	proto_config_add_int     "listen_port"
 	proto_config_add_string  "password"
 	proto_config_add_string  "device_id"
 	proto_config_add_array   "hash"
@@ -84,14 +107,45 @@ proto_qwdtt_init_config() {
 	proto_config_add_boolean "turn_tcp"
 }
 
+# The two shapes a qWDTT tunnel comes in, which differ in what the interface
+# ends up owning rather than in how the transport works.
+#
+# rawtun is the tunnel itself: the client creates the TUN device, the server
+# assigns its address, and the interface carries traffic like any other.
+#
+# wireguard carries no traffic of its own. The client relays a local UDP port
+# through the VK call to the server, which forwards it to its own WireGuard
+# port, so the interface provides an endpoint on 127.0.0.1 and nothing else -
+# no device, no address, no routes. What uses it is an ordinary `proto
+# wireguard` interface whose peer endpoint is that port, and everything about
+# the WireGuard tunnel - keys, addresses, allowed IPs, routing - belongs to
+# that interface.
+#
+# The ports are the server's two listeners, not its WireGuard port: that one
+# is internal, reachable from the server's own loopback and nowhere else, and
+# a client pointed at it is answered by nothing at all.
+QWDTT_PEER_PORT_rawtun=56003
+QWDTT_PEER_PORT_wireguard=56000
+
 proto_qwdtt_setup() {
 	local config="$1"
-	local peer_host peer_port password device_id workers go_dns obfs
+	local mode peer_host peer_port listen_port password device_id workers go_dns obfs
 	local captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
 	local hashes ip4table defaultroute owner
 
-	json_get_vars peer_host peer_port password device_id workers go_dns obfs \
+	json_get_vars mode peer_host peer_port listen_port password device_id workers go_dns obfs \
 		captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
+
+	mode="${mode:-rawtun}"
+	case "$mode" in
+	rawtun|wireguard) ;;
+	*)
+		logger -t qwdtt "network.$config.mode is $mode, which is neither rawtun nor wireguard"
+		proto_notify_error "$config" "INVALID_MODE"
+		proto_block_restart "$config"
+		return 1
+		;;
+	esac
 	# The client wants one comma-separated -vk value; the list arrives
 	# space-separated and a VK hash contains no spaces.
 	json_get_values hashes "hash"
@@ -113,23 +167,29 @@ proto_qwdtt_setup() {
 		proto_block_restart "$config"
 		return 1
 	}
-	# The interface name is the TUN device, and the kernel takes 15 characters.
+	# The interface name is also the name of its device - the TUN one a rawtun
+	# tunnel carries traffic on, the placeholder a wireguard one is reported up
+	# on - and the kernel takes 15 characters for either.
 	[ ${#config} -le 15 ] || {
 		logger -t qwdtt "network.$config: the name is longer than 15 characters, which cannot be an interface name"
 		proto_notify_error "$config" "NAME_TOO_LONG"
 		proto_block_restart "$config"
 		return 1
 	}
-	# The client reaches its VK TURN relays over the WAN, so a default route
-	# into the tunnel in the main table would send the tunnel's own transport
-	# through the tunnel. Refusing is the kinder failure: the alternative takes
-	# the router's WAN with it and leaves nothing to diagnose from.
-	[ "$defaultroute" = 0 ] || [ -n "$ip4table" ] || {
-		logger -t qwdtt "network.$config: set ip4table, or the default route into the tunnel would carry the client's own traffic to VK"
-		proto_notify_error "$config" "MISSING_IP4TABLE"
-		proto_block_restart "$config"
-		return 1
-	}
+	# A wireguard-mode tunnel adds no route of its own, so this one is about
+	# the RAW-IP shape alone.
+	if [ "$mode" = rawtun ]; then
+		# The client reaches its VK TURN relays over the WAN, so a default route
+		# into the tunnel in the main table would send the tunnel's own transport
+		# through the tunnel. Refusing is the kinder failure: the alternative takes
+		# the router's WAN with it and leaves nothing to diagnose from.
+		[ "$defaultroute" = 0 ] || [ -n "$ip4table" ] || {
+			logger -t qwdtt "network.$config: set ip4table, or the default route into the tunnel would carry the client's own traffic to VK"
+			proto_notify_error "$config" "MISSING_IP4TABLE"
+			proto_block_restart "$config"
+			return 1
+		}
+	fi
 
 	# The server knows the tunnel by this and nothing else, so there is no
 	# value to fall back to: a derived one would quietly reach the server as
@@ -154,13 +214,15 @@ proto_qwdtt_setup() {
 	proto_export "INTERFACE=$config"
 	proto_export "TZ=$(uci -q get system.@system[0].zonename)"
 
+	# Written out rather than as a shell default, because the fallback is one
+	# port per mode rather than one port. The two are named above.
+	[ -n "$peer_port" ] || eval "peer_port=\$QWDTT_PEER_PORT_$mode"
+
 	# Built with set -- rather than one expansion per option: a value that
 	# happens to contain a space stays a single argument, and no shell ever
 	# re-parses the password.
 	set -- -netifd \
-		-mode rawtun \
-		-tun-name "$config" \
-		-peer "${peer_host}:${peer_port:-56003}" \
+		-peer "${peer_host}:${peer_port}" \
 		-vk "$hashes" \
 		-password "$password" \
 		-device-id "$device_id" \
@@ -170,19 +232,48 @@ proto_qwdtt_setup() {
 		-captcha-mode "${captcha_mode:-auto}" \
 		-vk-auth "${vk_auth:-anonymous}" \
 		-vk-anon-path "${vk_anon_path:-vkcalls}"
+	if [ "$mode" = wireguard ]; then
+		set -- "$@" -mode vpn -listen "127.0.0.1:${listen_port:-9000}"
+	else
+		set -- "$@" -mode rawtun -tun-name "$config"
+	fi
 	[ -z "$vk_creds_file" ] || set -- "$@" -vk-creds-file "$vk_creds_file"
 	# Only passed when on: Go's flag package reads a bare -notls as true.
 	[ "$no_dtls" != 1 ] || set -- "$@" -notls
 	[ "$turn_tcp" != 1 ] || set -- "$@" -turn-tcp
 
 	proto_run_command "$config" "$CLIENT" "$@"
+
+	# A rawtun tunnel is reported up by the client, through
+	# /lib/netifd/qwdtt-up.sh, once the server has answered with an address.
+	# A wireguard one has no address to wait for and never will, so it is
+	# reported up here, as soon as the relay is started: what this interface
+	# provides is the local endpoint, and that exists from the moment the
+	# client binds it. Whether anything is getting through is a separate
+	# question, and the worker count and traffic figures are what answer it.
+	[ "$mode" != wireguard ] || {
+		relay_device "$config" || {
+			logger -t qwdtt "network.$config: cannot create the placeholder device"
+			proto_notify_error "$config" "NO_RELAY_DEVICE"
+			return 1
+		}
+		proto_init_update "$config" 1
+		proto_send_update "$config"
+	}
 }
 
 proto_qwdtt_teardown() {
 	local config="$1"
 
 	proto_kill_command "$config"
-	[ "$(uci -q get "network.$config.proto")" = qwdtt ] && return 0
+	# Still a RAW-IP qWDTT tunnel: the device is kept across the teardown and
+	# setup that every reconnect goes through, which is what holds its
+	# interface index. A wireguard-mode tunnel has no device to keep, and the
+	# TUN device left over from a tunnel that was switched to it is exactly
+	# what has to go - it would otherwise sit there holding the address the
+	# server last assigned until the router is rebooted.
+	[ "$(uci -q get "network.$config.proto")" = qwdtt ] &&
+		[ "$(uci -q get "network.$config.mode")" != wireguard ] && return 0
 
 	drop_device "$config"
 	# What the up-script and the client left for the status page to read. Both

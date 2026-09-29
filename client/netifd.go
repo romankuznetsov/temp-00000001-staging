@@ -153,6 +153,22 @@ func netifdUpEnv(device, address, dnsCSV string, mtu int) []string {
 	}
 }
 
+// Where a WireGuard configuration the server issues is kept. The default is
+// relative to the working directory, which under netifd is /lib/netifd/proto -
+// the package's own directory, and the same file for every tunnel on the
+// router. 0600 rather than the 0644 the run files get: this one holds the
+// private key.
+func netifdWGConfPath() string {
+	iface := os.Getenv("INTERFACE")
+	if !netifdManaged || iface == "" {
+		return "wg-turn.conf"
+	}
+	if err := os.MkdirAll(netifdRunDir, 0755); err != nil {
+		return "wg-turn.conf"
+	}
+	return filepath.Join(netifdRunDir, iface+".wg")
+}
+
 func writeNetifdRunFile(suffix, content string) {
 	iface := os.Getenv("INTERFACE")
 	if !netifdManaged || iface == "" {
@@ -305,6 +321,15 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 			// Written every tick rather than only on change, so a page reading
 			// it can tell "nothing yet" from a file nobody has updated.
 			writeNetifdRunFile("traffic", fmt.Sprintf("%d %d\n", seenAt, total))
+
+			// Nothing to probe through. A wireguard-mode tunnel carries no
+			// traffic of its own: it relays a local port, its device is a
+			// placeholder, and whether the far end still answers is
+			// WireGuard's own keepalive to establish. The figure above is
+			// still written, so the page can say when something last arrived.
+			if device == "" {
+				continue
+			}
 
 			idle := now.Sub(lastSeen)
 			shouldProbe, giveUp := netifdWatchAction(idle, probe != nil && probe.everAnswered())
