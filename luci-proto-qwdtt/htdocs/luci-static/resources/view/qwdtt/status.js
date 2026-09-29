@@ -287,32 +287,85 @@ var CHECK_TARGETS = {
 	'77.88.8.8': '77.88.8.8 (Yandex)'
 };
 
-function checkSection(nets) {
-	/* ping is bound to the tunnel with -I, and a WireGuard-mode tunnel has no
-	   device to bind to: it is a relay on 127.0.0.1, and what carries traffic
-	   is the WireGuard interface pointed at it. That one is checked on Network
-	   -> Diagnostics like any other interface. */
-	nets = nets.filter(function(net) {
-		return modeOf(net) == 'rawtun';
+var WG_PEER = 'wireguard_';
+
+/* Which interface a tunnel is checked through. A RAW-IP one carries the
+   traffic itself, so it is its own answer. A wireguard-mode one carries none:
+   it is a relay on 127.0.0.1, and what crosses it belongs to the WireGuard
+   interface pointed at that port. Asking the relay would prove nothing - its
+   device is the placeholder netifd needs to call the interface up, with no
+   address and no routes - so the question is passed to the interface above
+   it.
+
+   Which one that is does not have to be guessed at. A WireGuard peer section
+   is typed wireguard_<interface>, so a peer whose endpoint is this tunnel's
+   own local port names the interface sitting on top of it. */
+function checkDeviceOf(net) {
+	if (modeOf(net) == 'rawtun')
+		return net.getName();
+
+	var port = uci.get('network', net.getName(), 'listen_port') || RELAY_PORT;
+	var found = null;
+
+	uci.sections('network', null, function(section) {
+		var type = section['.type'] || '';
+
+		if (found || type.indexOf(WG_PEER) !== 0)
+			return;
+		if (section.endpoint_host != '127.0.0.1')
+			return;
+		if (String(section.endpoint_port || '') != String(port))
+			return;
+		found = type.substring(WG_PEER.length);
 	});
 
+	return found;
+}
+
+function checkSection(nets) {
 	if (!nets.length)
 		return E([]);
+
+	/* A wireguard-mode tunnel with nothing on it yet has nothing to ask, and
+	   it is the one case where saying so beats offering a control that cannot
+	   answer. */
+	var checkable = [];
+	nets.forEach(function(net) {
+		var device = checkDeviceOf(net);
+		if (device)
+			checkable.push({ net: net, device: device });
+	});
+
+	if (!checkable.length)
+		return E('div', { 'class': 'cbi-section' }, [
+			E('h3', {}, [ _('Check a tunnel') ]),
+			E('div', { 'class': 'cbi-section-descr' }, [
+				_('A WireGuard-mode tunnel is checked through the WireGuard interface that uses it, and none is configured yet: add one whose peer endpoint is this tunnel local endpoint, and it will be offered here.')
+			])
+		]);
 
 	var picker = E('select', {
 			'id': 'qwdtt-check-iface',
 			'class': 'cbi-input-select',
 			'style': 'margin:5px 0'
 		},
-		nets.map(function(net) {
+		checkable.map(function(entry) {
+			var name = entry.net.getName();
 			/* The interface name, not the device's. The TUN device is named
 			   after the section - the handler refuses a name over fifteen
 			   characters for exactly that reason - so they are the same thing
 			   while the tunnel is up. While it is down there is no L3 device,
 			   and LuCI stands in a placeholder called qwdtt-<name>, which is
 			   what ping was being asked to use: "bad address 'qwdtt-qwdtt0'"
-			   on a tunnel somebody was trying to find out about. */
-			return E('option', { 'value': net.getName() }, [ net.getName() ]);
+			   on a tunnel somebody was trying to find out about.
+
+			   Both names are shown where they differ, because the reply then
+			   comes back through an interface the reader did not name and the
+			   figure is only worth as much as knowing what it crossed. */
+			return E('option', { 'value': entry.device }, [
+				entry.device == name ? name
+					: '%s (%s)'.format(name, entry.device)
+			]);
 		}));
 
 	/* The widget the firewall pages use for an address: the resolvers worth
@@ -437,7 +490,7 @@ function checkSection(nets) {
 			}, [ _('Check a tunnel') ])
 		]),
 		E('div', { 'class': 'cbi-section-descr' }, [
-			_('Pings an address through the tunnel itself rather than through the router, which is what tells a tunnel that is up and carrying nothing from one that works.')
+			_('Pings an address through the tunnel itself rather than through the router, which is what tells a tunnel that is up and carrying nothing from one that works. A WireGuard-mode tunnel is asked through the WireGuard interface that uses it, named in brackets, since that is what carries the traffic. The ping is bound to the interface rather than routed to it, so it answers before anything has been routed into the tunnel at all.')
 		]),
 		E('table', { 'class': 'table' }, [
 			E('tr', { 'class': 'tr' }, [

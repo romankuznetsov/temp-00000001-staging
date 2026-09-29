@@ -146,8 +146,8 @@ msgstr "Через какую точку входа VK проходит анон
 msgid "Disable DTLS"
 msgstr "Отключить DTLS"
 
-msgid "Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, or the tunnel will not come up."
-msgstr "Прямой режим: RTP-obfs AEAD поверх TURN без DTLS. Сервер должен быть запущен с -listen-direct, иначе туннель не поднимется."
+msgid "Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, which is a separate listener on a port of its own - set Peer port to that port as well, or the tunnel will not come up."
+msgstr "Прямой режим: RTP-obfs AEAD поверх TURN без DTLS. Сервер должен быть запущен с -listen-direct: это отдельный слушатель на своем порту, поэтому в поле \"Порт сервера\" нужно указать именно его, иначе туннель не поднимется."
 
 msgid "TURN over TCP"
 msgstr "TURN через TCP"

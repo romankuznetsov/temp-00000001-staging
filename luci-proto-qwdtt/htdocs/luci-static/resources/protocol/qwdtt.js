@@ -759,8 +759,12 @@ return network.registerProtocol('qwdtt', {
 		o.value('legacy', 'legacy');
 		o.default = 'vkcalls';
 
+		/* The port matters as much as the flag and is easy to miss: -listen-direct
+		   is a listener of its own, not the same one without DTLS, so a tunnel
+		   left on the default port meets a listener that will not answer it and
+		   reports the timeout as a password problem. */
 		o = s.taboption('qwdtt', form.Flag, 'no_dtls', _('Disable DTLS'),
-			withDefault(_('off'), _('Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, or the tunnel will not come up.')));
+			withDefault(_('off'), _('Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, which is a separate listener on a port of its own - set Peer port to that port as well, or the tunnel will not come up.')));
 
 		o = s.taboption('qwdtt', form.Flag, 'turn_tcp', _('TURN over TCP'),
 			withDefault(_('off'), _('Reach the TURN relay over TCP instead of UDP. Works around UDP throttling on some networks, for example Rostelecom.')));
