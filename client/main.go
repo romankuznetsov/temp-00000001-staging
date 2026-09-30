@@ -188,6 +188,7 @@ func main() {
 	}
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
 	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
+	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
 	vkClientID := flag.String("vk-client-id", "", "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
 	vkClientSecret := flag.String("vk-client-secret", "", "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
@@ -338,6 +339,13 @@ func main() {
 
 	if *connPassword == "" {
 		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
+	}
+	// Kbit/s in, bytes/s out. Every session is paced to this on its way to the
+	// relay, so the tunnel's own ceiling is roughly this times the number of
+	// sessions that manage to come up.
+	if *rateUp > 0 {
+		sessionSendLimit = *rateUp * 125
+		log.Printf("[CLIENT] Per-session upload limit: %d Kbit/s (%d B/s) to each relay", *rateUp, sessionSendLimit)
 	}
 
 	// Built once here: every packet is sealed with it.

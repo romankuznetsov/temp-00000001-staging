@@ -213,6 +213,7 @@ func RunSession(
 	var firstWrapUp uint32
 	var firstWrapDown uint32
 	var firstWireWrite uint32
+	sendLimiter := newSessionLimiter()
 	var firstWireRead uint32
 
 	if len(creds.TurnURLs) == 0 {
@@ -676,6 +677,16 @@ func RunSession(
 			// socket buffer, a bad network) would hold the Writer for half an hour
 			// while this worker's SendCh/PrioCh queue piles up and/or is dropped
 			// by the dispatcher above (see readLoop in dispatcher.go).
+			// Paced here because this is the one place every packet of this
+			// session leaves by, whichever transport is underneath. Holding
+			// the Writer is what is wanted: the dispatcher sees this worker's
+			// queue fill and puts the next chunk through another.
+			if sendLimiter != nil {
+				if err := sendLimiter.WaitN(sessCtx, len(pkt)); err != nil {
+					putPktBuf(pkt)
+					return
+				}
+			}
 			_ = activeConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 			if atomic.CompareAndSwapUint32(&firstWireWrite, 0, 1) {
 				log.Printf("[WORKER #%d] [DEBUG] Sent the FIRST packet into the connection (%d bytes)", sessionID, len(pkt))

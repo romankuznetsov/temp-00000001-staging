@@ -205,3 +205,12 @@ msgstr "Звонок VK, которому принадлежит этот хеш
 
 msgid "The server did not answer: check the address, port and password"
 msgstr "Сервер не ответил: проверьте адрес, порт и пароль"
+
+msgid "Per-session upload limit"
+msgstr "Ограничение отдачи на сессию"
+
+msgid "none"
+msgstr "нет"
+
+msgid "Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is then limited to about this times the number of sessions that come up. Left empty, nothing is paced. This does not limit the download direction: those bytes have already crossed the relay by the time the client sees them."
+msgstr "Сколько Кбит/с одна сессия может отдавать своему ретранслятору VK, чтобы сессия выглядела обычным звонком, а не перекачкой данных. Весь туннель при этом ограничен примерно этим значением, умноженным на число поднявшихся сессий. Пустое поле - без ограничения. Входящий трафик так ограничить нельзя: к моменту, когда клиент его видит, он уже прошёл через ретранслятор."

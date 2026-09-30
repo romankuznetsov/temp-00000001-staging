@@ -648,6 +648,17 @@ return network.registerProtocol('qwdtt', {
 			return true;
 		};
 
+		/* Paced per session rather than per relay or in total, because the
+		   session is what VK allocates and meters: several sessions share one
+		   relay address, so a per-address limit would describe nothing VK
+		   sees. The tunnel's ceiling becomes roughly this times the number of
+		   sessions, which is why the hint says so - it is the one setting
+		   here that trades throughput away on purpose. */
+		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
+			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is then limited to about this times the number of sessions that come up. Left empty, nothing is paced. This does not limit the download direction: those bytes have already crossed the relay by the time the client sees them.')));
+		o.datatype = 'uinteger';
+		o.placeholder = _('none');
+
 		/* Both routing flags are RAW-IP only, and not merely as a tidiness: a
 		   WireGuard-mode interface adds no route of its own, so a rule steering
 		   the LAN at its table would find nothing there - and with the kill
