@@ -134,7 +134,7 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	d := &Dispatcher{
 		localConn: localConn,
 		ready:     ready,
-		ReturnCh:  make(chan []byte, returnChBuf),
+		ReturnCh:  make(chan []byte, returnChBufFor()),
 		ctx:       dctx,
 		cancel:    dcancel,
 		stats:     stats,
@@ -155,7 +155,7 @@ func NewDispatcherPendingTUN(ctx context.Context, stats *Stats) *Dispatcher {
 	dctx, dcancel := context.WithCancel(ctx)
 	d := &Dispatcher{
 		ready:    make(chan struct{}),
-		ReturnCh: make(chan []byte, returnChBuf),
+		ReturnCh: make(chan []byte, returnChBufFor()),
 		ctx:      dctx,
 		cancel:   dcancel,
 		stats:    stats,
@@ -465,6 +465,21 @@ func (d *Dispatcher) writeLoop() {
 		case <-d.ctx.Done():
 			return
 		case pkt := <-d.ReturnCh:
+			// The one place every packet from every relay leaves by, so the
+			// one place the download direction can be paced. Shaped rather
+			// than limited, and the difference matters: the packet is here
+			// because the relay already carried it, and nothing done now
+			// un-sends it. Holding it makes the flows inside the tunnel slow
+			// down - their self-clocking stretches and ReturnCh tail-drops
+			// the excess - so less is asked for and less crosses the relay a
+			// round trip later. Traffic that does not answer congestion, UDP
+			// above all, is only thrown away after VK has already counted it.
+			if tunnelRecvLimiter != nil {
+				if err := tunnelRecvLimiter.WaitN(d.ctx, len(pkt)); err != nil {
+					putPktBuf(pkt)
+					return
+				}
+			}
 			if d.tunFile != nil {
 				if atomic.CompareAndSwapUint32(&d.firstPktDown, 0, 1) {
 					log.Printf("[DISP] [DEBUG] Sending the FIRST packet back into the TUN (%d bytes)", len(pkt))

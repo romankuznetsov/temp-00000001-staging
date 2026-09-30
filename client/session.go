@@ -213,7 +213,7 @@ func RunSession(
 	var firstWrapUp uint32
 	var firstWrapDown uint32
 	var firstWireWrite uint32
-	sendLimiter := tunnelLimiter
+	sendLimiter := tunnelSendLimiter
 	var firstWireRead uint32
 
 	if len(creds.TurnURLs) == 0 {

@@ -189,6 +189,7 @@ func main() {
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
 	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
 	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
+	rateDown := flag.Int("rate-down", 0, "per-session download limit from the relay, in Kbit/s (0 = unlimited)")
 	vkClientID := flag.String("vk-client-id", "", "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
 	vkClientSecret := flag.String("vk-client-secret", "", "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
@@ -341,17 +342,24 @@ func main() {
 		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
 	}
 	// Kbit/s in, bytes/s out.
-	if *rateUp > 0 {
-		sessionSendLimit = *rateUp * 125
-		initTunnelLimiter(*numW)
-		total := *rateUp * *numW
-		log.Printf("[CLIENT] Upload limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
-			*rateUp, total, *numW)
-		// The tunnel's total, not the per-session figure, is what a transfer
-		// inside it has to live within. Measured over 18 sessions, 4.6 Mbit/s
-		// of total held 93% of its budget steadily and 1.2 Mbit/s held 95%,
-		// while 288 Kbit/s went stop-go: the window falls to a couple of
-		// packets and every loss then costs a whole timeout.
+	sessionSendLimit = *rateUp * 125
+	sessionRecvLimit = *rateDown * 125
+	initTunnelLimiters(*numW)
+	// The tunnel's total, not the per-session figure, is what a transfer
+	// inside it has to live within. Measured over 18 sessions, 4.6 Mbit/s of
+	// total held 93% of its budget steadily and 1.2 Mbit/s held 95%, while
+	// 288 Kbit/s went stop-go: the window falls to a couple of packets and
+	// every loss then costs a whole timeout.
+	for _, l := range []struct {
+		dir  string
+		rate int
+	}{{"Upload", *rateUp}, {"Download", *rateDown}} {
+		if l.rate <= 0 {
+			continue
+		}
+		total := l.rate * *numW
+		log.Printf("[CLIENT] %s limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
+			l.dir, l.rate, total, *numW)
 		if total < 1000 {
 			log.Printf("[CLIENT] %d Kbit/s over the whole tunnel is too little for a transfer to hold a window open; it will stall rather than slow. Raise the limit or the session count.",
 				total)
