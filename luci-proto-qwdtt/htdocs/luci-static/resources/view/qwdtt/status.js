@@ -75,6 +75,24 @@ function endpointOf(net) {
 		uci.get('network', net.getName(), 'listen_port') || RELAY_PORT);
 }
 
+/* The address the tunnel answers on. A RAW-IP tunnel holds it itself; a
+   wireguard-mode one never will - the placeholder its interface is reported up
+   on carries nothing - so the address is the one the server issued to the
+   WireGuard interface above it, which is what the far end actually sees. */
+function addressOf(net) {
+	if (modeOf(net) != 'wireguard')
+		return (net.getIPAddrs() || [])[0] || null;
+
+	var carrier = checkDeviceOf(net);
+	if (!carrier)
+		return null;
+
+	var addrs = uci.get('network', carrier, 'addresses');
+	if (Array.isArray(addrs))
+		addrs = addrs[0];
+	return addrs || null;
+}
+
 /* What the server knows this tunnel as. Two tunnels sharing one are a single
    device to it and disconnect each other in turn, which is not a thing any
    other column would show. A tunnel written before this was required can still
@@ -232,8 +250,8 @@ function stateOf(net) {
 		   pair is what matters: the same count on both sides is the solver
 		   keeping up, and a gap is what leaves the tunnel waiting. */
 		_('Captchas'), captchasOf(net),
+		_('IPv4'), addressOf(net),
 		_('Local endpoint'), endpointOf(net),
-		_('IPv4'), (net.getIPAddrs() || [])[0] || null,
 		_('RX'), device ? '%.2mB (%d %s)'.format(
 			since(device.getRXBytes(), base.rx_bytes),
 			since(device.getRXPackets(), base.rx_packets), _('Pkts.')) : null,
