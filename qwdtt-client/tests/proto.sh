@@ -94,6 +94,13 @@ INCLUDE_ONLY=1
 # is dropped rather than how it is recognised.
 drop_device() { echo "dropped: $1"; }
 
+# Nor any netlink for the placeholder a wireguard-mode tunnel is reported up
+# on: what matters here is whether it is asked for, what is done when it
+# cannot be made, and that the interface is only reported up after it exists.
+relay_device() { echo "device: $1"; }
+proto_init_update() { echo "init_update: $1"; }
+proto_send_update() { echo "send_update: $1"; }
+
 fail=0
 
 check() {
@@ -277,6 +284,68 @@ case $got in
 	echo "an enabled tunnel was refused for a device_id only a disabled one holds: ${got:-nothing ran}"
 	fail=1 ;;
 esac
+
+# --- wireguard mode ---------------------------------------------------------
+
+# The other shape entirely: no TUN device of its own, a local endpoint instead,
+# and the server's main listener rather than the RAW one.
+SECTIONS="$SECTIONS wgt wgtwin"
+set_cfg wgt.proto qwdtt
+set_cfg wgt.mode wireguard
+set_cfg wgt.peer_host vpnW.example
+set_cfg wgt.password pW
+set_cfg wgt.device_id openwrt-wgt
+set_cfg wgt.hash www
+SECTION=wgt
+got=$(proto_qwdtt_setup wgt 2>&1)
+case $got in
+*"-mode vpn -listen 127.0.0.1:9000 -peer vpnW.example:56000"*) ;;
+*)
+	echo "the wireguard command line:"
+	echo "$got" | sed -n 's/^run: //p'
+	fail=1 ;;
+esac
+# In that order: netifd refuses an update naming a device that does not exist,
+# so the placeholder has to be made before the interface is reported up.
+case $got in
+*"device: wgt"*"init_update: wgt"*"send_update: wgt"*) ;;
+*)
+	echo "a wireguard tunnel was not reported up on its placeholder device:"
+	echo "$got"
+	fail=1 ;;
+esac
+
+# proto_run_command has already started the client by the time the placeholder
+# is made, and returning non-zero does not stop it - without the kill the
+# client keeps the relay port bound for an interface that never came up.
+relay_device() { return 1; }
+got=$(proto_qwdtt_setup wgt 2>&1)
+relay_device() { echo "device: $1"; }
+case $got in
+*"refused: NO_RELAY_DEVICE"*) ;;
+*)
+	echo "a placeholder that could not be made was not reported: $got"
+	fail=1 ;;
+esac
+case $got in
+*"killed: wgt"*) ;;
+*)
+	echo "a failed placeholder left the client running:"
+	echo "$got"
+	fail=1 ;;
+esac
+
+# Two relays cannot share a local port: the second to start fails to bind and
+# the client exits, and because the interface is reported up as soon as the
+# client is started, the operator is left with an interface that says it is up
+# on a relay that never bound.
+set_cfg wgtwin.proto qwdtt
+set_cfg wgtwin.mode wireguard
+set_cfg wgtwin.peer_host vpnX.example
+set_cfg wgtwin.password pX
+set_cfg wgtwin.device_id openwrt-wgtwin
+set_cfg wgtwin.hash xxx
+refusal "two relays on one local port" wgtwin DUPLICATE_LISTEN_PORT
 
 # --- teardown ---------------------------------------------------------------
 

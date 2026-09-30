@@ -313,6 +313,7 @@ function dropSection(name) {
 	[ 'INVALID_MODE',           _('Mode must be either rawtun or wireguard') ],
 	[ 'NO_RELAY_DEVICE',        _('The placeholder device for this tunnel could not be created') ],
 	[ 'DUPLICATE_DEVICE_ID',    _('Another qWDTT interface already uses this device ID') ],
+	[ 'DUPLICATE_LISTEN_PORT',  _('Another qWDTT tunnel already uses this local endpoint port') ],
 	[ 'QWDTT_WRONG_PASSWORD',   _('The server rejected the connection password') ],
 	[ 'QWDTT_PASSWORD_EXPIRED', _('The connection password has expired') ],
 	[ 'QWDTT_DEVICE_MISMATCH',  _('Password is bound to another device ID: use a separate one') ],

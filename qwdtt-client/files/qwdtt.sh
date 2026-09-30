@@ -50,6 +50,37 @@ device_id_owner() {
 	echo "$QWDTT_OWNER"
 }
 
+# The same question for the relay's local port. Two relays cannot share one:
+# the second to start fails to bind and the client exits, and because the
+# interface is reported up as soon as the client is started, what the operator
+# sees is an interface that says it is up with a relay that never bound.
+# Refusing the configuration is the readable failure.
+QWDTT_PORT=
+
+qwdtt_port_claim() {
+	local section="$1" proto mode port disabled
+
+	[ -z "$QWDTT_OWNER" ] && [ "$section" != "$QWDTT_SELF" ] || return 0
+	config_get proto "$section" proto
+	[ "$proto" = qwdtt ] || return 0
+	config_get mode "$section" mode rawtun
+	[ "$mode" = wireguard ] || return 0
+	config_get_bool disabled "$section" disabled 0
+	[ "$disabled" = 0 ] || return 0
+	config_get port "$section" listen_port 9000
+	[ "$port" = "$QWDTT_PORT" ] && QWDTT_OWNER="$section"
+	return 0
+}
+
+listen_port_owner() {
+	QWDTT_SELF="$1"
+	QWDTT_PORT="$2"
+	QWDTT_OWNER=
+
+	config_foreach qwdtt_port_claim interface
+	echo "$QWDTT_OWNER"
+}
+
 # The device outlives the client on purpose - see TUNSETPERSIST in the client's
 # raw_tun_native_linux.go - and netifd tears the protocol down and sets it up
 # again every time the client exits. Deleting the device there would give the
@@ -220,6 +251,15 @@ proto_qwdtt_setup() {
 		proto_block_restart "$config"
 		return 1
 	}
+	if [ "$mode" = wireguard ]; then
+		owner=$(listen_port_owner "$config" "${listen_port:-9000}")
+		[ -z "$owner" ] || {
+			logger -t qwdtt "network.$config: local port ${listen_port:-9000} is already used by $owner"
+			proto_notify_error "$config" "DUPLICATE_LISTEN_PORT"
+			proto_block_restart "$config"
+			return 1
+		}
+	fi
 
 	# INTERFACE is what the up-script reports against and what tags the
 	# client's lines in the system log; netifd runs every protocol task under
@@ -275,6 +315,10 @@ proto_qwdtt_setup() {
 		relay_device "$config" || {
 			logger -t qwdtt "network.$config: cannot create the placeholder device"
 			proto_notify_error "$config" "NO_RELAY_DEVICE"
+			# proto_run_command has already started the client, and returning
+			# non-zero does not stop it: without this it keeps the relay port
+			# bound for an interface that never came up.
+			proto_kill_command "$config"
 			return 1
 		}
 		proto_init_update "$config" 1

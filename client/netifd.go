@@ -311,42 +311,14 @@ func netifdWatchAction(idle, age time.Duration, answered bool) (probe, giveUp bo
 	return true, idle >= netifdStallTimeout
 }
 
-// The same question for a wireguard-mode tunnel, which cannot be asked the
-// same way: it has no device to bind a probe to, only a placeholder, and the
-// relay speaks no protocol of its own to ask with.
-//
-// It does not need one. What crosses the relay is WireGuard, and a WireGuard
-// peer with PersistentKeepalive sends every 25 seconds whether or not anybody
-// is using the tunnel - the server issues 25 in the configuration it hands
-// out. So the traffic the RAW-IP watch has to manufacture is already there,
-// and the question becomes whether what we are sending is being answered.
-//
-// This is inference, which failed once before: an earlier watch decided a
-// tunnel was dead from the LAN sending while nothing came back, and missed a
-// seven-hour outage because the router had not been sending. The difference
-// here is the keepalive. There, silence outbound meant nobody was using the
-// tunnel and nothing could be concluded; here, silence outbound means no
-// WireGuard interface is pointed at the relay - in which case there is
-// nothing to rescue and nothing should happen. Both readings are correct,
-// which is what makes the inference safe in this mode and not in the other.
-//
-// idleOut is deliberately compared against the same timeout rather than the
-// keepalive interval: an interface that is sending is sending far more often
-// than that, and a margin costs nothing against the one thing this must never
-// do, which is take down a tunnel nobody has finished setting up.
-//
-// received is the same gate the RAW-IP watch applies through `answered`, and
-// for the same reason: silence means the far end stopped only if it ever
-// started. A relay that has never delivered a byte is far more likely to be
-// misconfigured than broken - a peer port that is not the server's listener,
-// or, worse, a WireGuard interface above with the wrong keys, which keeps
-// handshaking through a relay that is working perfectly while nothing can
-// come back. Restarting fixes none of those, and costs the server another
-// set of sessions every five minutes for as long as it is wrong.
-//
-// Measured on a router with the relays blocked from the start: without this
-// the tunnel gave itself up at 5m0s having received nothing at all, which is
-// the case the RAW-IP watch is explicitly written not to act on.
+// The same question for a wireguard-mode tunnel, which has no device to probe
+// through and needs none: WireGuard's PersistentKeepalive (25s, from the
+// config the server issues) keeps outbound traffic flowing whether or not the
+// tunnel is in use, so a stall is outbound still moving while nothing comes
+// back. received gates it the way `answered` gates the RAW-IP watch - a relay
+// that has never delivered is misconfigured rather than stalled, and giving it
+// up every five minutes fixes none of the causes. TestNetifdRelayStalled holds
+// each of these readings.
 func netifdRelayStalled(idleIn, idleOut time.Duration, received bool) bool {
 	return received && idleIn >= netifdStallTimeout && idleOut < netifdStallTimeout
 }
