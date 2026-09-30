@@ -13,21 +13,21 @@ import (
 // describe nothing VK sees. Measured unlimited, a session sends about 90 KB/s
 // where a real call's uplink is a fraction of that.
 var (
-	sessionSendLimit int
 	sessionRecvLimit int
+	sessionSendLimit int
 )
 
 // nil when that direction is not limited, so the packet path costs nothing in
-// the usual case. Every session's Writer waits on the first; the dispatcher's
-// single writeLoop waits on the second.
+// the usual case. The dispatcher's single writeLoop waits on the first; every
+// session's Writer waits on the second.
 var (
-	tunnelSendLimiter *rate.Limiter
 	tunnelRecvLimiter *rate.Limiter
+	tunnelSendLimiter *rate.Limiter
 )
 
 func initTunnelLimiters(workers int) {
-	tunnelSendLimiter = newTunnelLimiter(sessionSendLimit, workers)
 	tunnelRecvLimiter = newTunnelLimiter(sessionRecvLimit, workers)
+	tunnelSendLimiter = newTunnelLimiter(sessionSendLimit, workers)
 }
 
 // One bucket for the whole tunnel, at the per-session rate times the number
@@ -65,11 +65,11 @@ func setTunnelSessions(n int) {
 	if n <= 0 {
 		return
 	}
-	if tunnelSendLimiter != nil {
-		tunnelSendLimiter.SetLimit(rate.Limit(sessionSendLimit * n))
-	}
 	if tunnelRecvLimiter != nil {
 		tunnelRecvLimiter.SetLimit(rate.Limit(sessionRecvLimit * n))
+	}
+	if tunnelSendLimiter != nil {
+		tunnelSendLimiter.SetLimit(rate.Limit(sessionSendLimit * n))
 	}
 }
 

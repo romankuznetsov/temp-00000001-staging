@@ -663,18 +663,18 @@ return network.registerProtocol('qwdtt', {
 		   sees. The tunnel's ceiling becomes roughly this times the number of
 		   sessions, which is why the hint says so - these are the two settings
 		   here that trade throughput away on purpose. */
-		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
-			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is limited to this times the number of sessions that come up, and that total is what traffic inside the tunnel has to live within. Keep it above about 1 Mbit/s: below that a transfer cannot hold a window open and goes stop-go rather than slow, so at the usual session count a call-sized 64 to 256 is both plausible and steady. Left empty, nothing is paced.')));
-		o.datatype = 'uinteger';
-		o.placeholder = _('none');
-
 		/* The asymmetry in the hint is the honest part: the upload limit
 		   decides what crosses the relay, while this one can only decide what
 		   is let out of the client afterwards. It still works, because the
 		   flows inside slow down and stop asking for as much - but a round
 		   trip later, and not at all for traffic that ignores congestion. */
 		o = s.taboption('qwdtt', form.Value, 'rate_down', _('Per-session download limit'),
-			withDefault(_('none'), _('Kbit/s each session may receive from its VK relay, again times the number of sessions for the tunnel as a whole. This one shapes rather than blocks: a packet is only here because the relay already carried it, so what the limit does is hold it back until the transfers inside the tunnel slow down and stop asking for more. They take a round trip to notice, and traffic that ignores congestion is simply discarded after VK has already counted it. Set the total below what the tunnel downloads unpaced, or the limit and the path fight over the same bytes and you get less than either alone: measured, a total of 1.2 Mbit/s arrived at 91% of budget without a single retransmission, while a total set level with the path made it worse than no limit at all. Left empty, nothing is paced.')));
+			withDefault(_('none'), _('Kbit/s each session may receive from its VK relay, times the number of sessions for the tunnel as a whole. This one shapes rather than blocks: a packet is only here because the relay already carried it, so what the limit does is hold it back until the transfers inside the tunnel slow down and stop asking for more. They take a round trip to notice, and traffic that ignores congestion is simply discarded after VK has already counted it. Set the total below what the tunnel downloads unpaced, or the limit and the path fight over the same bytes and you get less than either alone: measured, a total of 1.2 Mbit/s arrived at 91% of budget without a single retransmission, while a total set level with the path made it worse than no limit at all. Left empty, nothing is paced.')));
+		o.datatype = 'uinteger';
+		o.placeholder = _('none');
+
+		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
+			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is limited to this times the number of sessions that come up, and that total is what traffic inside the tunnel has to live within. Keep it above about 1 Mbit/s: below that a transfer cannot hold a window open and goes stop-go rather than slow, so at the usual session count a call-sized 64 to 256 is both plausible and steady. Left empty, nothing is paced.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 

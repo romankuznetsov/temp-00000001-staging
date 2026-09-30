@@ -146,11 +146,11 @@ set_cfg work.no_dtls 1
 set_cfg work.turn_tcp 0
 set_cfg work.vk_client_id 123456
 set_cfg work.vk_client_secret 'sekret with a space'
-set_cfg work.rate_up 150
 set_cfg work.rate_down 400
+set_cfg work.rate_up 150
 got=$(proto_qwdtt_setup work 2>&1)
 case $got in
-*"-vk-anon-path vkcalls -vk-creds-file /etc/qwdtt/creds with a space.json -rate-up 150 -rate-down 400 -notls") ;;
+*"-vk-anon-path vkcalls -vk-creds-file /etc/qwdtt/creds with a space.json -rate-down 400 -rate-up 150 -notls") ;;
 *)
 	echo "the optional flags:"
 	echo "--- got"
@@ -160,7 +160,7 @@ esac
 # Absent unless set: an empty -rate-up would be a limit of nothing rather than
 # no limit, and the same for the other direction.
 case $(echo "$got" | sed -n 's/^run: //p') in
-*"-rate-up 150"*"-rate-down 400"*) ;;
+*"-rate-down 400"*"-rate-up 150"*) ;;
 *) echo "the per-session limits were not passed"; fail=1 ;;
 esac
 saved=$CFG

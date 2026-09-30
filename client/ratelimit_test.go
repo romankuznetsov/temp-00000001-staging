@@ -12,22 +12,12 @@ func TestTunnelLimitersAreOnlyBuiltWhenAsked(t *testing.T) {
 	defer restoreLimits(t)
 
 	initTunnelLimiters(18)
-	if tunnelSendLimiter != nil || tunnelRecvLimiter != nil {
+	if tunnelRecvLimiter != nil || tunnelSendLimiter != nil {
 		t.Error("no limit configured, but a limiter was built")
 	}
 
 	// One direction limited must not pace the other.
-	sessionSendLimit, sessionRecvLimit = 32000, 0
-	initTunnelLimiters(18)
-	if tunnelSendLimiter == nil {
-		t.Error("an upload limit was configured but no limiter was built")
-	}
-	if tunnelRecvLimiter != nil {
-		t.Error("only the upload was limited, but the download was paced too")
-	}
-
-	restoreLimits(t)
-	sessionSendLimit, sessionRecvLimit = 0, 32000
+	sessionRecvLimit, sessionSendLimit = 32000, 0
 	initTunnelLimiters(18)
 	if tunnelRecvLimiter == nil {
 		t.Error("a download limit was configured but no limiter was built")
@@ -36,12 +26,22 @@ func TestTunnelLimitersAreOnlyBuiltWhenAsked(t *testing.T) {
 		t.Error("only the download was limited, but the upload was paced too")
 	}
 
+	restoreLimits(t)
+	sessionRecvLimit, sessionSendLimit = 0, 32000
+	initTunnelLimiters(18)
+	if tunnelSendLimiter == nil {
+		t.Error("an upload limit was configured but no limiter was built")
+	}
+	if tunnelRecvLimiter != nil {
+		t.Error("only the upload was limited, but the download was paced too")
+	}
+
 	// No sessions is not a rate of nothing: it is a tunnel that carries
 	// nothing yet, and pacing it to zero would wedge every writer.
 	restoreLimits(t)
-	sessionSendLimit, sessionRecvLimit = 32000, 32000
+	sessionRecvLimit, sessionSendLimit = 32000, 32000
 	initTunnelLimiters(0)
-	if tunnelSendLimiter != nil || tunnelRecvLimiter != nil {
+	if tunnelRecvLimiter != nil || tunnelSendLimiter != nil {
 		t.Error("zero sessions built a limiter that could never release a packet")
 	}
 }
@@ -52,14 +52,14 @@ func TestTunnelLimitersAreOnlyBuiltWhenAsked(t *testing.T) {
 func TestTunnelLimitersSpendEverySessionsShare(t *testing.T) {
 	defer restoreLimits(t)
 
-	sessionSendLimit, sessionRecvLimit = 32000, 96000 // 256 and 768 Kbit/s
+	sessionRecvLimit, sessionSendLimit = 96000, 32000 // 768 and 256 Kbit/s
 	initTunnelLimiters(18)
 
-	if got, want := int(tunnelSendLimiter.Limit()), 18*32000; got != want {
-		t.Errorf("upload paced to %d B/s, want %d", got, want)
-	}
 	if got, want := int(tunnelRecvLimiter.Limit()), 18*96000; got != want {
 		t.Errorf("download paced to %d B/s, want %d", got, want)
+	}
+	if got, want := int(tunnelSendLimiter.Limit()), 18*32000; got != want {
+		t.Errorf("upload paced to %d B/s, want %d", got, want)
 	}
 }
 
@@ -70,28 +70,28 @@ func TestTunnelLimitersSpendEverySessionsShare(t *testing.T) {
 func TestTunnelLimitersFollowTheLiveSessionCount(t *testing.T) {
 	defer restoreLimits(t)
 
-	sessionSendLimit, sessionRecvLimit = 32000, 96000
+	sessionRecvLimit, sessionSendLimit = 96000, 32000
 	initTunnelLimiters(18)
 
 	setTunnelSessions(9)
-	if got, want := int(tunnelSendLimiter.Limit()), 9*32000; got != want {
-		t.Errorf("9 sessions left, upload paced to %d B/s, want %d", got, want)
-	}
 	if got, want := int(tunnelRecvLimiter.Limit()), 9*96000; got != want {
 		t.Errorf("9 sessions left, download paced to %d B/s, want %d", got, want)
+	}
+	if got, want := int(tunnelSendLimiter.Limit()), 9*32000; got != want {
+		t.Errorf("9 sessions left, upload paced to %d B/s, want %d", got, want)
 	}
 
 	// The last one going must not leave a bucket that releases nothing: a
 	// writer waiting on a rate of zero never comes back.
 	setTunnelSessions(0)
-	if int(tunnelSendLimiter.Limit()) == 0 || int(tunnelRecvLimiter.Limit()) == 0 {
+	if int(tunnelRecvLimiter.Limit()) == 0 || int(tunnelSendLimiter.Limit()) == 0 {
 		t.Error("paced to zero, which a writer would wait on for ever")
 	}
 
 	// Unpaced stays unpaced, whatever the sessions do.
 	restoreLimits(t)
 	setTunnelSessions(18)
-	if tunnelSendLimiter != nil || tunnelRecvLimiter != nil {
+	if tunnelRecvLimiter != nil || tunnelSendLimiter != nil {
 		t.Error("no limit configured, but registering a session built one")
 	}
 }
@@ -106,13 +106,13 @@ func TestTunnelLimitersFollowTheLiveSessionCount(t *testing.T) {
 func TestTunnelLimitersDoNotStoreUpASecond(t *testing.T) {
 	defer restoreLimits(t)
 
-	sessionSendLimit, sessionRecvLimit = 32000, 32000
+	sessionRecvLimit, sessionSendLimit = 32000, 32000
 	initTunnelLimiters(18)
 
 	for _, c := range []struct {
 		dir string
 		lim *rate.Limiter
-	}{{"upload", tunnelSendLimiter}, {"download", tunnelRecvLimiter}} {
+	}{{"download", tunnelRecvLimiter}, {"upload", tunnelSendLimiter}} {
 		// One instant, so this measures the standing burst and not the rate.
 		var atOnce int
 		for now := time.Now(); c.lim.AllowN(now, 1400); {
@@ -198,6 +198,6 @@ func TestPacedQueuesAreSizedInTime(t *testing.T) {
 
 func restoreLimits(t *testing.T) {
 	t.Helper()
-	sessionSendLimit, sessionRecvLimit = 0, 0
-	tunnelSendLimiter, tunnelRecvLimiter = nil, nil
+	sessionRecvLimit, sessionSendLimit = 0, 0
+	tunnelRecvLimiter, tunnelSendLimiter = nil, nil
 }

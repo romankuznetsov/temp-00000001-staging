@@ -188,8 +188,8 @@ func main() {
 	}
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
 	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
-	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
 	rateDown := flag.Int("rate-down", 0, "per-session download limit from the relay, in Kbit/s (0 = unlimited)")
+	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
 	vkClientID := flag.String("vk-client-id", "", "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
 	vkClientSecret := flag.String("vk-client-secret", "", "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
@@ -342,8 +342,8 @@ func main() {
 		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
 	}
 	// Kbit/s in, bytes/s out.
-	sessionSendLimit = *rateUp * 125
 	sessionRecvLimit = *rateDown * 125
+	sessionSendLimit = *rateUp * 125
 	initTunnelLimiters(*numW)
 	// The tunnel's total, not the per-session figure, is what a transfer
 	// inside it has to live within. Measured over 18 sessions, 4.6 Mbit/s of
@@ -353,7 +353,7 @@ func main() {
 	for _, l := range []struct {
 		dir  string
 		rate int
-	}{{"Upload", *rateUp}, {"Download", *rateDown}} {
+	}{{"Download", *rateDown}, {"Upload", *rateUp}} {
 		if l.rate <= 0 {
 			continue
 		}

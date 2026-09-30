@@ -135,6 +135,10 @@ function check(what, got, want) {
 	// belong together and at the end rather than among the plain settings.
 	check('the routing flags come last on the tab, in that order',
 		Object.keys(opts).slice(-2), [ '_lanroute', '_killswitch' ]);
+
+	check('the two pacing limits are adjacent, download first',
+		Object.keys(opts).filter(k => k == 'rate_up' || k == 'rate_down'),
+		[ 'rate_down', 'rate_up' ]);
 }
 
 // --- deleting a tunnel takes its routing with it ---------------------------
