@@ -50,11 +50,13 @@ device_id_owner() {
 	echo "$QWDTT_OWNER"
 }
 
-# The same question for the relay's local port. Two relays cannot share one:
-# the second to start fails to bind and the client exits, and because the
-# interface is reported up as soon as the client is started, what the operator
-# sees is an interface that says it is up with a relay that never bound.
-# Refusing the configuration is the readable failure.
+# The same question for the relay's local port, and the reason it has to be
+# asked here rather than left to the client: two relays on one port do not
+# collide. SO_REUSEADDR lets the second bind the address the first holds, so
+# nothing fails and the packets are split between them - both tunnels come up
+# and the WireGuard interfaces above them quietly stop working. Nothing
+# downstream can detect that, so the configuration is refused instead.
+# TestListenUDPLetsASecondSocketShareThePort holds the binding behaviour.
 QWDTT_PORT=
 
 qwdtt_port_claim() {
@@ -302,28 +304,23 @@ proto_qwdtt_setup() {
 	[ "$no_dtls" != 1 ] || set -- "$@" -notls
 	[ "$turn_tcp" != 1 ] || set -- "$@" -turn-tcp
 
+	# Before the client, not after: the client is what reports a wireguard-mode
+	# interface up - through /lib/netifd/qwdtt-relay-up.sh, once its relay holds
+	# the local port - and netifd refuses an update naming a device that does
+	# not exist yet. Failing here also costs nothing to unwind, because nothing
+	# has been started.
+	[ "$mode" != wireguard ] || relay_device "$config" || {
+		logger -t qwdtt "network.$config: cannot create the placeholder device"
+		proto_notify_error "$config" "NO_RELAY_DEVICE"
+		return 1
+	}
+
 	proto_run_command "$config" "$CLIENT" "$@"
 
-	# A rawtun tunnel is reported up by the client, through
-	# /lib/netifd/qwdtt-up.sh, once the server has answered with an address.
-	# A wireguard one has no address to wait for and never will, so it is
-	# reported up here, as soon as the relay is started: what this interface
-	# provides is the local endpoint, and that exists from the moment the
-	# client binds it. Whether anything is getting through is a separate
-	# question, and the worker count and traffic figures are what answer it.
-	[ "$mode" != wireguard ] || {
-		relay_device "$config" || {
-			logger -t qwdtt "network.$config: cannot create the placeholder device"
-			proto_notify_error "$config" "NO_RELAY_DEVICE"
-			# proto_run_command has already started the client, and returning
-			# non-zero does not stop it: without this it keeps the relay port
-			# bound for an interface that never came up.
-			proto_kill_command "$config"
-			return 1
-		}
-		proto_init_update "$config" 1
-		proto_send_update "$config"
-	}
+	# Neither shape is reported up from here. A rawtun tunnel waits for the
+	# server to answer with an address and reports through qwdtt-up.sh; a
+	# wireguard one has no address to wait for and reports as soon as its relay
+	# is listening. Both are facts only the client knows.
 }
 
 proto_qwdtt_teardown() {

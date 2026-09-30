@@ -402,17 +402,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Listen locally (SO_REUSEADDR - a quick restart without "address already in use")
-	localConn, err := listenUDP(*listen)
-	if err != nil {
-		log.Fatalf("[CLIENT] Listener error %s: %v", *listen, err)
+	// Only the modes that relay through it. A rawtun tunnel carries its traffic
+	// on the TUN device and never reads this socket - NewDispatcherPendingTUN
+	// below is given none - so binding it there did nothing except claim
+	// 127.0.0.1:9000 and stop a second tunnel on the router from starting.
+	//
+	// SO_REUSEADDR, so a quick restart reclaims the port rather than meeting
+	// "address already in use" left by the process that just exited.
+	var localConn net.PacketConn
+	if activeConnMode != "rawtun" {
+		conn, listenErr := listenUDP(*listen)
+		if listenErr != nil {
+			// The endpoint is the whole of what this mode provides, so the
+			// interface is told why instead of being restarted for ever with
+			// nothing on the page.
+			notifyNetifdListenFailed()
+			log.Fatalf("[CLIENT] Listener error %s: %v", *listen, listenErr)
+		}
+		if uc, ok := conn.(*net.UDPConn); ok {
+			_ = uc.SetReadBuffer(socketBufSize)
+			_ = uc.SetWriteBuffer(socketBufSize)
+		}
+		localConn = conn
+		stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
+		defer stopLocalConn()
+
+		// Up from this moment, and not before: the relay is listening.
+		if *netifd && activeConnMode == "vpn" {
+			if err := notifyNetifdRelayUp(); err != nil {
+				log.Printf("[NETIFD] reporting the relay up: %v", err)
+			}
+		}
 	}
-	if uc, ok := localConn.(*net.UDPConn); ok {
-		_ = uc.SetReadBuffer(socketBufSize)
-		_ = uc.SetWriteBuffer(socketBufSize)
-	}
-	stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
-	defer stopLocalConn()
 
 	_, localPort, _ := net.SplitHostPort(*listen)
 	if localPort == "" {

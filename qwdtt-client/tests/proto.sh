@@ -305,19 +305,28 @@ case $got in
 	echo "$got" | sed -n 's/^run: //p'
 	fail=1 ;;
 esac
-# In that order: netifd refuses an update naming a device that does not exist,
-# so the placeholder has to be made before the interface is reported up.
+# In that order: the client reports the interface up once its relay is
+# listening, and netifd refuses an update naming a device that does not exist,
+# so the placeholder has to be made before the client is started.
 case $got in
-*"device: wgt"*"init_update: wgt"*"send_update: wgt"*) ;;
+*"device: wgt"*"run: /usr/bin/qwdtt-client"*) ;;
 *)
-	echo "a wireguard tunnel was not reported up on its placeholder device:"
+	echo "the placeholder was not made before the client was started:"
 	echo "$got"
 	fail=1 ;;
 esac
 
-# proto_run_command has already started the client by the time the placeholder
-# is made, and returning non-zero does not stop it - without the kill the
-# client keeps the relay port bound for an interface that never came up.
+# And the handler reports nothing up itself: it returns as soon as the client
+# is started, which says nothing about whether the relay took its port.
+case $got in
+*init_update*|*send_update*)
+	echo "the handler reported the interface up instead of leaving it to the client:"
+	echo "$got"
+	fail=1 ;;
+esac
+
+# A placeholder that cannot be made stops the setup before the client is
+# started, so there is nothing running to unwind.
 relay_device() { return 1; }
 got=$(proto_qwdtt_setup wgt 2>&1)
 relay_device() { echo "device: $1"; }
@@ -328,17 +337,16 @@ case $got in
 	fail=1 ;;
 esac
 case $got in
-*"killed: wgt"*) ;;
-*)
-	echo "a failed placeholder left the client running:"
+*"run: "*)
+	echo "the client was started despite having no placeholder to report up on:"
 	echo "$got"
 	fail=1 ;;
 esac
 
-# Two relays cannot share a local port: the second to start fails to bind and
-# the client exits, and because the interface is reported up as soon as the
-# client is started, the operator is left with an interface that says it is up
-# on a relay that never bound.
+# Two relays on one local port do not collide: SO_REUSEADDR lets the second
+# bind the address the first holds, both tunnels come up, and the packets are
+# split between them. Nothing at runtime can see that, so the configuration is
+# what has to be refused.
 set_cfg wgtwin.proto qwdtt
 set_cfg wgtwin.mode wireguard
 set_cfg wgtwin.peer_host vpnX.example

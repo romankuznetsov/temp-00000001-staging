@@ -182,6 +182,9 @@ msgstr "Не задан идентификатор устройства"
 msgid "Another qWDTT tunnel already uses this local endpoint port"
 msgstr "Этот локальный порт уже занят другим туннелем qWDTT"
 
+msgid "The relay could not open its local endpoint"
+msgstr "Ретранслятор не смог открыть локальную точку подключения"
+
 msgid "Another qWDTT interface already uses this device ID"
 msgstr "Этот идентификатор устройства уже занят другим интерфейсом qWDTT"
 
