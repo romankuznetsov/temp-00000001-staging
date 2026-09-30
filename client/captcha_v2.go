@@ -205,10 +205,8 @@ func (s *captchaV2Session) solveOnce(captchaErr *VkCaptchaError) (string, error)
 	base := captchaV2BaseValues(captchaErr.SessionToken, s.domain)
 
 	if initShowType, initSlider, initErr := s.initSession(base); initErr != nil {
-		// Survivable only where the page already said what this is. A page
-		// without window.init has no other source of the type, and carrying
-		// on with an empty one picks the checkbox solver for what may be a
-		// slider - an attempt spent to learn nothing.
+		// Survivable only where the page already said what this is: carrying
+		// on with no type picks the checkbox solver for what may be a slider.
 		if showType == "" {
 			return "", fmt.Errorf("captcha init failed and the page names no type: %w", initErr)
 		}

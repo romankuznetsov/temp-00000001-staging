@@ -370,6 +370,13 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 		var seenAt int64
 		var probe *tunnelProbe
 		var probeErr bool
+		// Outside the probe's lifetime on purpose. A send that fails closes the
+		// socket and builds a new one, and a fresh tunnelProbe has answered
+		// nothing - so reading the flag off the probe made one failed send look
+		// like a server that had never replied, which past netifdProbeArmFor
+		// stops the watch probing at all and leaves it unable to give the
+		// tunnel up for the rest of its life.
+		var answered bool
 		defer func() {
 			if probe != nil {
 				probe.close()
@@ -424,8 +431,10 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 			}
 
 			idle := now.Sub(lastSeen)
-			shouldProbe, giveUp := netifdWatchAction(idle, now.Sub(started),
-				probe != nil && probe.everAnswered())
+			if probe != nil && probe.everAnswered() {
+				answered = true
+			}
+			shouldProbe, giveUp := netifdWatchAction(idle, now.Sub(started), answered)
 
 			if giveUp {
 				log.Printf("[NETIFD] nothing has come back through the tunnel for %v, and the server has stopped answering it, giving the interface up so it is rebuilt",

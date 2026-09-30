@@ -310,7 +310,9 @@ function checkDeviceOf(net) {
 	uci.sections('network', null, function(section) {
 		var type = section['.type'] || '';
 
-		if (found || type.indexOf(WG_PEER) !== 0)
+		/* A disabled peer is not configured at all, so matching one would
+		   name an interface that carries nothing and hide the real match. */
+		if (found || section.disabled == '1' || type.indexOf(WG_PEER) !== 0)
 			return;
 		if (section.endpoint_host != '127.0.0.1')
 			return;

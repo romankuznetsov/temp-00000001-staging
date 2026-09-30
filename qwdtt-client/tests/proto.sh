@@ -355,6 +355,20 @@ set_cfg wgtwin.device_id openwrt-wgtwin
 set_cfg wgtwin.hash xxx
 refusal "two relays on one local port" wgtwin DUPLICATE_LISTEN_PORT
 
+# But a tunnel the operator has parked holds no port, so it must not keep a
+# running one off it: whichever starts first claims the port, and the other is
+# refused on its way up.
+set_cfg wgt.auto 0
+SECTION=wgtwin
+got=$(proto_qwdtt_setup wgtwin 2>&1 | sed -n 's/^run: //p')
+case $got in
+/usr/bin/qwdtt-client*) ;;
+*)
+	echo "a parked tunnel reserved the port against a running one: ${got:-nothing ran}"
+	fail=1 ;;
+esac
+set_cfg wgt.auto 1
+
 # --- teardown ---------------------------------------------------------------
 
 # netifd tears the protocol down and sets it up again every time the client

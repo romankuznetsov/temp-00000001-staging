@@ -50,25 +50,25 @@ device_id_owner() {
 	echo "$QWDTT_OWNER"
 }
 
-# The same question for the relay's local port, and the reason it has to be
-# asked here rather than left to the client: two relays on one port do not
-# collide. SO_REUSEADDR lets the second bind the address the first holds, so
-# nothing fails and the packets are split between them - both tunnels come up
-# and the WireGuard interfaces above them quietly stop working. Nothing
-# downstream can detect that, so the configuration is refused instead.
-# TestListenUDPLetsASecondSocketShareThePort holds the binding behaviour.
+# The same question for the relay's local port. Two relays on one port do not
+# collide - SO_REUSEADDR lets the second bind and the packets are split
+# between them - so nothing downstream can detect it and the configuration is
+# what has to be refused.
 QWDTT_PORT=
 
 qwdtt_port_claim() {
-	local section="$1" proto mode port disabled
+	local section="$1" proto mode port disabled auto
 
 	[ -z "$QWDTT_OWNER" ] && [ "$section" != "$QWDTT_SELF" ] || return 0
 	config_get proto "$section" proto
 	[ "$proto" = qwdtt ] || return 0
 	config_get mode "$section" mode rawtun
 	[ "$mode" = wireguard ] || return 0
+	# A tunnel the operator has parked holds no port. Whichever of the two is
+	# started first then claims it, and the second is refused on its way up.
 	config_get_bool disabled "$section" disabled 0
-	[ "$disabled" = 0 ] || return 0
+	config_get_bool auto "$section" auto 1
+	[ "$disabled" = 0 ] && [ "$auto" != 0 ] || return 0
 	config_get port "$section" listen_port 9000
 	[ "$port" = "$QWDTT_PORT" ] && QWDTT_OWNER="$section"
 	return 0
