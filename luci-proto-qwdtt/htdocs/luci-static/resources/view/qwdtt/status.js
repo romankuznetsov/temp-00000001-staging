@@ -34,10 +34,24 @@ function tunnels() {
 	}).then(function(res) {
 		var runtime = res[1] || {};
 
-		return res[0].filter(function(net) {
+		var all = res[0];
+
+		return all.filter(function(net) {
 			return net.getProtocol() == 'qwdtt';
 		}).map(function(net) {
 			net.qwdttRuntime = runtime[net.getName()] || {};
+			/* The WireGuard interface a wireguard-mode tunnel is carried by,
+			   kept here because it is where that tunnel's address and its byte
+			   counters actually live. Taken from the list already fetched
+			   rather than asked for again. */
+			net.qwdttCarrier = null;
+			if (modeOf(net) == 'wireguard') {
+				var name = checkDeviceOf(net);
+				if (name)
+					net.qwdttCarrier = all.filter(function(n) {
+						return n.getName() == name;
+					})[0] || null;
+			}
 			return net;
 		});
 	});
@@ -197,13 +211,15 @@ function since(now, base) {
    the sessions, what last arrived, the worker count beside them - are what say
    whether anything is getting through. */
 function stateOf(net) {
-	/* Only a RAW-IP tunnel has counters worth reading. The device of a
-	   WireGuard-mode one is the placeholder netifd needs to report the
-	   interface up at all and carries nothing, so its totals would sit at zero
-	   beside a relay that is working - and what does carry the traffic is the
-	   WireGuard interface, which has a page of its own. */
+	/* Whichever device actually carries the traffic. For a RAW-IP tunnel that
+	   is the interface itself; for a wireguard-mode one the placeholder it is
+	   reported up on carries nothing, and the WireGuard interface above it
+	   does. Reading the placeholder would show a steady zero beside a relay
+	   that is working. */
+	var carrier = net.qwdttCarrier;
 	var device = modeOf(net) == 'rawtun'
-		? (net.getL3Device() || net.getDevice()) : null;
+		? (net.getL3Device() || net.getDevice())
+		: (carrier ? (carrier.getL3Device() || carrier.getDevice()) : null);
 
 	if (!net.isUp()) {
 		/* Whatever netifd was told about why. Without this the column said
