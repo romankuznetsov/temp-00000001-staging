@@ -340,22 +340,21 @@ func main() {
 	if *connPassword == "" {
 		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
 	}
-	// Kbit/s in, bytes/s out. Every session is paced to this on its way to the
-	// relay, so the tunnel's own ceiling is roughly this times the number of
-	// sessions that manage to come up.
+	// Kbit/s in, bytes/s out.
 	if *rateUp > 0 {
 		sessionSendLimit = *rateUp * 125
-		log.Printf("[CLIENT] Per-session upload limit: %d Kbit/s (%d B/s) to each relay", *rateUp, sessionSendLimit)
-		// How long one full packet takes to pay for at this rate, which is
-		// what a packet handed to an idle session waits before it leaves.
-		// Once that passes a fraction of a second it, and not the rate, is
-		// what the TCP inside the tunnel reacts to: measured against the
-		// configured budget, 96% of it arrived at 400 Kbit/s a session, 87%
-		// at 100 and 55% at 16, the last with the transfer stalled for three
-		// seconds in four.
-		if quantum := 11200 / *rateUp; quantum > 150 {
-			log.Printf("[CLIENT] At %d Kbit/s one packet takes %dms to clear, so throughput and steadiness both suffer; 64 Kbit/s or more behaves far better and is still call-sized",
-				*rateUp, quantum)
+		initTunnelLimiter(*numW)
+		total := *rateUp * *numW
+		log.Printf("[CLIENT] Upload limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
+			*rateUp, total, *numW)
+		// The tunnel's total, not the per-session figure, is what a transfer
+		// inside it has to live within. Measured over 18 sessions, 4.6 Mbit/s
+		// of total held 93% of its budget steadily and 1.2 Mbit/s held 95%,
+		// while 288 Kbit/s went stop-go: the window falls to a couple of
+		// packets and every loss then costs a whole timeout.
+		if total < 1000 {
+			log.Printf("[CLIENT] %d Kbit/s over the whole tunnel is too little for a transfer to hold a window open; it will stall rather than slow. Raise the limit or the session count.",
+				total)
 		}
 	}
 

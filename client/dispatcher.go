@@ -99,11 +99,13 @@ type WorkerSlot struct {
 }
 
 type Dispatcher struct {
-	// How many packets from the TUN were dropped because every worker was
-	// overloaded. Counted because the symptom is indistinguishable from the
-	// TUN not being read at all - the server sees no packets either way -
-	// and the two are fixed differently.
-	tunDroppedCount uint64
+	// How many packets were dropped because every worker was overloaded.
+	// Counted because the symptom is indistinguishable from the device not
+	// being read at all - the server sees no packets either way - and the two
+	// are fixed differently. Counted in both modes: while this was kept for
+	// raw-IP only, a wireguard-mode tunnel shedding a window at a time looked
+	// from the outside like a slow link and left nothing in the log.
+	droppedCount uint64
 
 	localConn     net.PacketConn
 	tunFile       *os.File // not nil in -mode rawtun: raw IP packets instead of the local WG loopback
@@ -231,6 +233,7 @@ func (d *Dispatcher) Register(w *WorkerSlot) {
 	count := len(d.workers)
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d registered (total: %d)", w.ID, count)
+	setTunnelSessions(count)
 	d.reportWorkers(count)
 }
 
@@ -250,6 +253,7 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 	d.rrCount = 0
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d disconnected (remaining: %d)", slot.ID, remaining)
+	setTunnelSessions(remaining)
 	d.reportWorkers(remaining)
 }
 
@@ -438,11 +442,9 @@ func (d *Dispatcher) readLoop() {
 			d.rrIndex = (idx + 1) % nw
 			d.rrCount = 0
 			putPktBuf(pkt)
-			if d.tunFile != nil {
-				c := atomic.AddUint64(&d.tunDroppedCount, 1)
-				if c == 1 || c%50 == 0 {
-					rawDiagf("readLoop: packet from TUN DROPPED -- all workers are overloaded (dropped in total=%d)", c)
-				}
+			c := atomic.AddUint64(&d.droppedCount, 1)
+			if c == 1 || c%50 == 0 {
+				rawDiagf("readLoop: packet DROPPED -- all workers are overloaded (dropped in total=%d)", c)
 			}
 		}
 		d.mu.Unlock()
