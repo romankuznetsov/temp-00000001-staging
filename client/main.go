@@ -346,6 +346,17 @@ func main() {
 	if *rateUp > 0 {
 		sessionSendLimit = *rateUp * 125
 		log.Printf("[CLIENT] Per-session upload limit: %d Kbit/s (%d B/s) to each relay", *rateUp, sessionSendLimit)
+		// How long one full packet takes to pay for at this rate, which is
+		// what a packet handed to an idle session waits before it leaves.
+		// Once that passes a fraction of a second it, and not the rate, is
+		// what the TCP inside the tunnel reacts to: measured against the
+		// configured budget, 96% of it arrived at 400 Kbit/s a session, 87%
+		// at 100 and 55% at 16, the last with the transfer stalled for three
+		// seconds in four.
+		if quantum := 11200 / *rateUp; quantum > 150 {
+			log.Printf("[CLIENT] At %d Kbit/s one packet takes %dms to clear, so throughput and steadiness both suffer; 64 Kbit/s or more behaves far better and is still call-sized",
+				*rateUp, quantum)
+		}
 	}
 
 	// Built once here: every packet is sealed with it.

@@ -554,7 +554,7 @@ func RunSession(
 	// Register with the dispatcher
 	slot := &WorkerSlot{
 		ID:     sessionID,
-		SendCh: make(chan []byte, workerSendBuf),
+		SendCh: make(chan []byte, workerSendBufFor(sessionSendLimit)),
 		PrioCh: make(chan []byte, prioBuf),
 	}
 	d.Register(slot)
