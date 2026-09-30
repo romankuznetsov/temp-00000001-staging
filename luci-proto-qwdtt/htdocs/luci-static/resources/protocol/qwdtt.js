@@ -664,7 +664,7 @@ return network.registerProtocol('qwdtt', {
 		   sessions, which is why the hint says so - it is the one setting
 		   here that trades throughput away on purpose. */
 		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
-			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is then limited to about this times the number of sessions that come up. Below about 64 the limit costs more than it sets: one packet then takes most of a second to clear and the traffic inside the tunnel stalls rather than slows, so a call-sized 64 to 128 is both more plausible and far steadier. Left empty, nothing is paced. This does not limit the download direction: those bytes have already crossed the relay by the time the client sees them.')));
+			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is limited to this times the number of sessions that come up, and that total is what traffic inside the tunnel has to live within. Keep it above about 1 Mbit/s: below that a transfer cannot hold a window open and goes stop-go rather than slow, so at the usual session count a call-sized 64 to 256 is both plausible and steady. Left empty, nothing is paced. This does not limit the download direction: those bytes have already crossed the relay by the time the client sees them.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 
