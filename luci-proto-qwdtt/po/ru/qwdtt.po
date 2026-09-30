@@ -89,7 +89,7 @@ msgstr "Записывает обычное правило маршрутиза�
 msgid "This needs \"Use default gateway\" under Advanced Settings: without it the tunnel adds no default route for the rule to find, and the LAN would reach nothing."
 msgstr "Для этого нужен включённый параметр \"Использовать шлюз по умолчанию\" в дополнительных настройках: без него туннель не добавляет маршрут по умолчанию, и правилу нечего будет найти, а локальная сеть останется без доступа."
 
-msgid "Do not allow traffic if the tunnel is down (kill switch)."
+msgid "Do not allow traffic if the tunnel is down (kill switch)"
 msgstr "Не пропускать трафик, если туннель не работает (килл-свитч)"
 
 msgid "Writes an unreachable default route into the routing table of this tunnel, so traffic sent there is refused rather than released to the WAN whenever the tunnel is not up. Independent of the rule above: it covers whatever looks up that table, including a rule written by hand."

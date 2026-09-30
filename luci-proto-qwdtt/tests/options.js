@@ -129,6 +129,12 @@ function check(what, got, want) {
 		opts._lanroute.cfgvalue('qwdtt0'), '1');
 	check('both point at the table the tunnel was seeded with',
 		uci.get('network', 'qwdtt0_killswitch', 'table'), '51820');
+
+	// The two of them write sections of their own rather than a value, and the
+	// kill switch's description is written against the rule above it, so they
+	// belong together and at the end rather than among the plain settings.
+	check('the routing flags come last on the tab, in that order',
+		Object.keys(opts).slice(-2), [ '_lanroute', '_killswitch' ]);
 }
 
 // --- deleting a tunnel takes its routing with it ---------------------------
