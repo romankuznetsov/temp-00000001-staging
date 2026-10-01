@@ -188,6 +188,8 @@ func main() {
 	}
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
 	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
+	rateDown := flag.Int("rate-down", 0, "per-session download limit from the relay, in Kbit/s (0 = unlimited)")
+	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
 	vkClientID := flag.String("vk-client-id", fileConfig.VKClientID, "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
 	vkClientSecret := flag.String("vk-client-secret", fileConfig.VKClientSec, "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
@@ -314,6 +316,29 @@ func main() {
 
 	if len(hashes) == 0 {
 		log.Fatal("[CLIENT] No VK hashes")
+	}
+
+	// Kbit/s in, bytes/s out.
+	sessionRecvLimit = *rateDown * 125
+	sessionSendLimit = *rateUp * 125
+	initTunnelLimiters(*numW)
+	// The tunnel's total, not the per-session figure, is what a transfer
+	// inside it has to live within: below about 1 Mbit/s of it the window
+	// collapses and the transfer stalls rather than slows.
+	for _, l := range []struct {
+		dir  string
+		rate int
+	}{{"Download", *rateDown}, {"Upload", *rateUp}} {
+		if l.rate <= 0 {
+			continue
+		}
+		total := l.rate * *numW
+		log.Printf("[CLIENT] %s limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
+			l.dir, l.rate, total, *numW)
+		if total < 1000 {
+			log.Printf("[CLIENT] %d Kbit/s over the whole tunnel is too little for a transfer to hold a window open; it will stall rather than slow. Raise the limit or the session count.",
+				total)
+		}
 	}
 
 	// /proc/<pid>/cmdline is readable by everyone on the router and
