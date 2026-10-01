@@ -41,3 +41,30 @@ func TestStunErrorCodeIsReadNotSearchedFor(t *testing.T) {
 		t.Errorf("a wrapped 486 read as %d", code)
 	}
 }
+
+// The same fault in the other direction. The session labels a failure "TURN
+// quota:" and the group reads that label, so a timeout on a port containing
+// 486 used to be retried on the 30-60s quota delay rather than the usual
+// 5-15s.
+func TestQuotaRefusalIsReadNotSearchedFor(t *testing.T) {
+	timeout := errors.New("read udp 0.0.0.0:48601->1.2.3.4:3478: i/o timeout")
+	if isQuotaRefusal(timeout) {
+		t.Error("a timeout on port 48601 was taken for a quota refusal")
+	}
+
+	quota := &stun.TurnError{ErrorCodeAttr: stun.ErrorCodeAttribute{Code: stun.CodeAllocQuotaReached}}
+	if !isQuotaRefusal(quota) {
+		t.Error("the relay's own 486 was not taken for a quota refusal")
+	}
+	if !isQuotaRefusal(fmt.Errorf("TURN Allocate: %w", quota)) {
+		t.Error("a wrapped 486 was lost")
+	}
+
+	// The relay's reason text, for a relay that sends one without the code.
+	if !isQuotaRefusal(errors.New("Allocation Quota Reached")) {
+		t.Error("the relay's own reason text was not taken for a quota refusal")
+	}
+	if isQuotaRefusal(nil) {
+		t.Error("no error was taken for a quota refusal")
+	}
+}
