@@ -232,9 +232,14 @@ func (d *Dispatcher) Register(w *WorkerSlot) {
 	d.mu.Lock()
 	d.workers = append(d.workers, w)
 	count := len(d.workers)
+	// Under the lock, so the rate the limiter ends up with is the one that
+	// goes with the last count published. Two registrations racing outside it
+	// can publish in either order, and the loser leaves the tunnel paced for
+	// fewer sessions than it has until the next change. Safe to hold: the
+	// limiters take only their own lock and never come back here.
+	setTunnelSessions(count)
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d registered (total: %d)", w.ID, count)
-	setTunnelSessions(count)
 	d.reportWorkers(count)
 }
 
@@ -252,9 +257,9 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 		d.rrIndex = d.rrIndex % remaining
 	}
 	d.rrCount = 0
+	setTunnelSessions(remaining)
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d disconnected (remaining: %d)", slot.ID, remaining)
-	setTunnelSessions(remaining)
 	d.reportWorkers(remaining)
 }
 

@@ -318,29 +318,6 @@ func main() {
 		log.Fatal("[CLIENT] No VK hashes")
 	}
 
-	// Kbit/s in, bytes/s out.
-	sessionRecvLimit = *rateDown * 125
-	sessionSendLimit = *rateUp * 125
-	initTunnelLimiters(*numW)
-	// The tunnel's total, not the per-session figure, is what a transfer
-	// inside it has to live within: below about 1 Mbit/s of it the window
-	// collapses and the transfer stalls rather than slows.
-	for _, l := range []struct {
-		dir  string
-		rate int
-	}{{"Download", *rateDown}, {"Upload", *rateUp}} {
-		if l.rate <= 0 {
-			continue
-		}
-		total := l.rate * *numW
-		log.Printf("[CLIENT] %s limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
-			l.dir, l.rate, total, *numW)
-		if total < 1000 {
-			log.Printf("[CLIENT] %d Kbit/s over the whole tunnel is too little for a transfer to hold a window open; it will stall rather than slow. Raise the limit or the session count.",
-				total)
-		}
-	}
-
 	// /proc/<pid>/cmdline is readable by everyone on the router and
 	// /proc/<pid>/environ by root alone, and the password used to be in the
 	// readable one. The flags stay for a client started by hand.
@@ -393,6 +370,31 @@ func main() {
 	}
 
 	netifdWorkerSlots = *numW
+
+	// Kbit/s in, bytes/s out, and after the worker count is settled: the
+	// limiters take the count as their multiplier, and -n 0 would otherwise
+	// build none at all while normalisation went on to start nine.
+	sessionRecvLimit = *rateDown * 125
+	sessionSendLimit = *rateUp * 125
+	initTunnelLimiters(*numW)
+	// The tunnel's total, not the per-session figure, is what a transfer
+	// inside it has to live within: below about 1 Mbit/s of it the window
+	// collapses and the transfer stalls rather than slows.
+	for _, l := range []struct {
+		dir  string
+		rate int
+	}{{"Download", *rateDown}, {"Upload", *rateUp}} {
+		if l.rate <= 0 {
+			continue
+		}
+		total := l.rate * *numW
+		log.Printf("[CLIENT] %s limit: %d Kbit/s a session, %d Kbit/s over %d sessions",
+			l.dir, l.rate, total, *numW)
+		if total < 1000 {
+			log.Printf("[CLIENT] %d Kbit/s over the whole tunnel is too little for a transfer to hold a window open; it will stall rather than slow. Raise the limit or the session count.",
+				total)
+		}
+	}
 
 	tp := &TurnParams{
 		Host:         *host,
