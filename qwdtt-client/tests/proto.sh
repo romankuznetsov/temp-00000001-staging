@@ -399,6 +399,32 @@ set_cfg wgt.disabled 0
 
 set_cfg wgt.auto 1
 
+# A password in /etc/config/network reaches the client through netifd's own
+# argv and through ubus, both readable while the interface comes up. Pointing
+# at the client's own file instead leaves only the path in those places, so
+# config_file has to be accepted in place of a password rather than alongside
+# one - and refused clearly when it names a file that cannot be read, since
+# the client exits on that and netifd would restart it at once.
+set_cfg nopass.config_file "$QWDTT_RUN_DIR/creds.json"
+: > "$QWDTT_RUN_DIR/creds.json"
+SECTION=nopass
+got=$(proto_qwdtt_setup nopass 2>&1)
+case $got in
+*"run: "*"-config $QWDTT_RUN_DIR/creds.json"*) ;;
+*)
+	echo "a tunnel with a config file instead of a password did not start:"
+	echo "$got"
+	fail=1 ;;
+esac
+case $got in
+*QWDTT_PASSWORD*)
+	echo "the password was still exported when the secrets live in a file:"
+	echo "$got"
+	fail=1 ;;
+esac
+command rm -f "$QWDTT_RUN_DIR/creds.json"
+refusal "a config file that cannot be read" nopass UNREADABLE_CONFIG_FILE
+
 # --- teardown ---------------------------------------------------------------
 
 # netifd tears the protocol down and sets it up again every time the client

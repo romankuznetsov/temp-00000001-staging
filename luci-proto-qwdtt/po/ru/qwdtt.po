@@ -182,6 +182,9 @@ msgstr "Не задан идентификатор устройства"
 msgid "Another qWDTT tunnel already uses this local endpoint port"
 msgstr "Этот локальный порт уже занят другим туннелем qWDTT"
 
+msgid "The client config file set here cannot be read"
+msgstr "Файл настроек клиента, указанный здесь, не читается"
+
 msgid "The relay could not open its local endpoint"
 msgstr "Ретранслятор не смог открыть локальную точку подключения"
 

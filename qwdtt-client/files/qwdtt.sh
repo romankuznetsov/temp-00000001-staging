@@ -160,6 +160,7 @@ proto_qwdtt_init_config() {
 	proto_config_add_string  "vk_anon_path"
 	proto_config_add_string  "vk_creds_file"
 	proto_config_add_int     "rate_up"
+	proto_config_add_string  "config_file"
 	proto_config_add_string  "vk_client_id"
 	proto_config_add_string  "vk_client_secret"
 	proto_config_add_boolean "no_dtls"
@@ -190,11 +191,11 @@ proto_qwdtt_setup() {
 	local config="$1"
 	local mode peer_host peer_port listen_port password device_id workers go_dns obfs
 	local captcha_mode vk_auth vk_anon_path vk_creds_file vk_client_id vk_client_secret
-	local rate_up no_dtls turn_tcp hashes ip4table defaultroute owner
+	local rate_up config_file no_dtls turn_tcp hashes ip4table defaultroute owner
 
 	json_get_vars mode peer_host peer_port listen_port password device_id workers go_dns obfs \
 		captcha_mode vk_auth vk_anon_path vk_creds_file vk_client_id vk_client_secret \
-		rate_up no_dtls turn_tcp
+		rate_up config_file no_dtls turn_tcp
 
 	mode="${mode:-rawtun}"
 	case "$mode" in
@@ -231,9 +232,18 @@ proto_qwdtt_setup() {
 	# nothing to do without it and exits - and netifd starts it again the
 	# instant it does, with no backoff. Measured on a router: 349 starts in
 	# thirty seconds, with the interface page showing nothing at all.
-	[ -n "$password" ] || {
+	[ -n "$password" ] || [ -n "$config_file" ] || {
 		logger -t qwdtt "network.$config.password is not set"
 		proto_notify_error "$config" "MISSING_PASSWORD"
+		proto_block_restart "$config"
+		return 1
+	}
+	# Checked here rather than left to the client, which exits on an
+	# unreadable one. netifd would start it again the instant it does, which
+	# is the restart storm MISSING_PASSWORD above exists to prevent.
+	[ -z "$config_file" ] || [ -r "$config_file" ] || {
+		logger -t qwdtt "network.$config.config_file $config_file cannot be read"
+		proto_notify_error "$config" "UNREADABLE_CONFIG_FILE"
 		proto_block_restart "$config"
 		return 1
 	}
@@ -296,7 +306,13 @@ proto_qwdtt_setup() {
 	# /proc/<pid>/cmdline is readable by every process on the router and
 	# /proc/<pid>/environ by root alone. The password used to be in the
 	# readable one, and in every `ps` an operator pasted into a bug report.
-	proto_export "QWDTT_PASSWORD=$password"
+	#
+	# This does not hide them completely, and config_file is the way out:
+	# netifd hands the interface's own configuration to this script as an
+	# argument and proto_export reaches ubus as one too, so anything kept in
+	# /etc/config/network is readable for as long as the interface is coming
+	# up. Only the path is, once the secrets live in the client's own file.
+	[ -z "$password" ] || proto_export "QWDTT_PASSWORD=$password"
 	[ -z "$vk_client_id" ] || proto_export "QWDTT_VK_CLIENT_ID=$vk_client_id"
 	[ -z "$vk_client_secret" ] || proto_export "QWDTT_VK_CLIENT_SECRET=$vk_client_secret"
 
@@ -324,6 +340,7 @@ proto_qwdtt_setup() {
 		-vk-auth "${vk_auth:-anonymous}" \
 		-vk-anon-path "${vk_anon_path:-vkcalls}"
 	[ -z "$vk_creds_file" ] || set -- "$@" -vk-creds-file "$vk_creds_file"
+	[ -z "$config_file" ] || set -- "$@" -config "$config_file"
 	[ -z "$rate_up" ] || set -- "$@" -rate-up "$rate_up"
 	# Only passed when on: Go's flag package reads a bare -notls as true.
 	[ "$no_dtls" != 1 ] || set -- "$@" -notls

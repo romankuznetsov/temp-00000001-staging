@@ -189,8 +189,8 @@ func main() {
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
 	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
 	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
-	vkClientID := flag.String("vk-client-id", "", "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
-	vkClientSecret := flag.String("vk-client-secret", "", "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
+	vkClientID := flag.String("vk-client-id", fileConfig.VKClientID, "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
+	vkClientSecret := flag.String("vk-client-secret", fileConfig.VKClientSec, "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
 	if captchaModeDefault == "" {
 		captchaModeDefault = "auto"
