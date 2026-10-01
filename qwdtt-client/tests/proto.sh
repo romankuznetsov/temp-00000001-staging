@@ -88,6 +88,9 @@ proto_kill_command() { echo "killed: $1"; }
 rm() { echo "removed: $*"; }
 
 INCLUDE_ONLY=1
+QWDTT_TMP=$(mktemp -d)
+# command, because rm is stubbed above to report rather than delete.
+trap 'command rm -rf "$QWDTT_TMP"' EXIT
 . ./qwdtt-client/files/qwdtt.sh
 
 # There is no /sys here, and what the checks below are about is when the device
@@ -113,7 +116,8 @@ check() {
 got=$(proto_qwdtt_setup qwdtt0 2>&1)
 want='export: INTERFACE=qwdtt0
 export: TZ=Europe/Moscow
-run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name qwdtt0 -peer vpn1.example:56003 -vk aaa,bbb -password p1 -device-id openwrt-qwdtt0 -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
+export: QWDTT_PASSWORD=p1
+run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name qwdtt0 -peer vpn1.example:56003 -vk aaa,bbb -device-id openwrt-qwdtt0 -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
 check "a complete tunnel" "$got" "$want"
 
 # Every default here is one the handler supplies rather than the client, so a
@@ -123,7 +127,8 @@ SECTION=work
 got=$(proto_qwdtt_setup work 2>&1)
 want='export: INTERFACE=work
 export: TZ=Europe/Moscow
-run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name work -peer vpn2.example:56003 -vk ccc -password p2 -device-id openwrt-work -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
+export: QWDTT_PASSWORD=p2
+run: /usr/bin/qwdtt-client -netifd -mode rawtun -tun-name work -peer vpn2.example:56003 -vk ccc -device-id openwrt-work -n 9 -go-dns yandex -obfs audio -captcha-mode auto -vk-auth anonymous -vk-anon-path vkcalls'
 check "no peer_port falls back to 56003, and every optional value left unset" "$got" "$want"
 
 # The three that are appended rather than always passed. -notls and -turn-tcp
@@ -254,6 +259,53 @@ case $got in
 	echo "an enabled tunnel was refused for a device_id only a disabled one holds: ${got:-nothing ran}"
 	fail=1 ;;
 esac
+
+# Nothing secret on the command line. /proc/<pid>/cmdline is readable by every
+# process on the router and turns up in every ps pasted into a bug report;
+# /proc/<pid>/environ is root's alone.
+set_cfg work.vk_client_id 123456
+set_cfg work.vk_client_secret 'sekret with a space'
+SECTION=work
+got=$(proto_qwdtt_setup work 2>&1)
+case $(echo "$got" | sed -n 's/^run: //p') in
+*p2*|*sekret*|*123456*)
+	echo "a secret reached the command line:"
+	echo "$got"
+	fail=1 ;;
+esac
+case $got in
+*"export: QWDTT_PASSWORD=p2"*"export: QWDTT_VK_CLIENT_ID=123456"*"export: QWDTT_VK_CLIENT_SECRET=sekret with a space"*) ;;
+*)
+	echo "the secrets were not exported:"
+	echo "$got"
+	fail=1 ;;
+esac
+
+# A password in /etc/config/network still reaches the client through netifd's
+# own argv and through ubus, both readable while the interface comes up.
+# Pointing at the client's own file leaves only the path in those places, so
+# config_file has to be accepted in place of a password - and refused clearly
+# when it names a file that cannot be read, since the client exits on that and
+# netifd would restart it at once.
+set_cfg nopass.config_file "$QWDTT_TMP/creds.json"
+: > "$QWDTT_TMP/creds.json"
+SECTION=nopass
+got=$(proto_qwdtt_setup nopass 2>&1)
+case $got in
+*"run: "*"-config $QWDTT_TMP/creds.json"*) ;;
+*)
+	echo "a tunnel with a config file instead of a password did not start:"
+	echo "$got"
+	fail=1 ;;
+esac
+case $got in
+*QWDTT_PASSWORD*)
+	echo "the password was still exported when the secrets live in a file:"
+	echo "$got"
+	fail=1 ;;
+esac
+command rm -f "$QWDTT_TMP/creds.json"
+refusal "a config file that cannot be read" nopass UNREADABLE_CONFIG_FILE
 
 # --- teardown ---------------------------------------------------------------
 

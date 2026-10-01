@@ -146,6 +146,9 @@ msgstr "Подключаться к TURN по TCP вместо UDP. Обходи
 msgid "No server address is set"
 msgstr "Не задан адрес сервера"
 
+msgid "The client config file set here cannot be read"
+msgstr "Файл настроек клиента, указанный здесь, не читается"
+
 msgid "No connection password is set"
 msgstr "Не задан пароль подключения"
 
