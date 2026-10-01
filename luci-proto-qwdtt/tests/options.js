@@ -405,10 +405,9 @@ function check(what, got, want) {
 // at a port nobody mentioned looks exactly like a server that is not there.
 {
 	const handler = fs.readFileSync('qwdtt-client/files/qwdtt.sh', 'utf8');
-	// The status page names the same ports and is checked here too once it
-	// learns about wireguard mode.
 	const PAGES = [
-		'luci-proto-qwdtt/htdocs/luci-static/resources/protocol/qwdtt.js'
+		'luci-proto-qwdtt/htdocs/luci-static/resources/protocol/qwdtt.js',
+		'luci-proto-qwdtt/htdocs/luci-static/resources/view/qwdtt/status.js'
 	];
 
 	const ports = {};
