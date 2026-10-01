@@ -31,6 +31,11 @@ type VKCredentials struct {
 	ClientSecret string
 }
 
+// The VK application the anonymous path presents itself as. Both pairs are
+// the reference client's and both are in this public repository, so VK
+// revoking either takes every router down at the same moment. main replaces
+// the list with the pair from -vk-client-id and -vk-client-secret when one is
+// given, so that a rotation is a configuration change rather than a release.
 var vkCredentialsList = []VKCredentials{
 	{ClientID: "6287487", ClientSecret: "MuAxFaKDYDOICzGnEOhp"},
 	{ClientID: "8202606", ClientSecret: "lMRsTiMCyPnp5vfoldmn"},
