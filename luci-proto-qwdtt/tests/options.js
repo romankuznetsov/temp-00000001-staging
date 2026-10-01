@@ -58,7 +58,16 @@ function load(uci, formvalues) {
 	const opts = {};
 	const section = {
 		section: 'qwdtt0',
-		tab() {},
+		// As form.js does it: a second declaration of the same tab throws,
+		// which is what the interface editor hit when one qWDTT interface was
+		// opened after another. A no-op stub here could not have caught it.
+		tabs: null,
+		tab(name, title) {
+			if (this.tabs && this.tabs[name])
+				throw 'Tab already declared';
+			this.tabs = this.tabs || {};
+			this.tabs[name] = { name, title };
+		},
 		formvalue(sid, name) { return formvalues[name]; },
 		taboption(tab, type, name, title, desc) {
 			const o = {
@@ -284,6 +293,54 @@ function check(what, got, want) {
 	}
 }
 
+// --- the editor may render the same section twice -------------------------
+// Open one qWDTT interface, close it, open another: the editor comes back
+// with a section that already carries the tab, and form.js throws on a
+// repeat declaration. What the operator saw was "Tab already declared" and
+// an editor that would not open.
+{
+	const uci = makeUci();
+	uci.add('network', 'interface', 'qwdtt0');
+	uci.set('network', 'qwdtt0', 'proto', 'qwdtt');
+
+	const opts = {};
+	const section = {
+		section: 'qwdtt0',
+		tabs: null,
+		tab(name, title) {
+			if (this.tabs && this.tabs[name])
+				throw 'Tab already declared';
+			this.tabs = this.tabs || {};
+			this.tabs[name] = { name, title };
+		},
+		formvalue() { return null; },
+		taboption(tab, type, name, title, desc) {
+			const o = { enabled: '1', disabled: '0', section, optName: name,
+			            title, description: desc, value() {}, depends() {} };
+			opts[name] = o;
+			return o;
+		}
+	};
+	const form = {};
+	[ 'Flag', 'Value', 'ListValue', 'DynamicList' ].forEach(k => {
+		form[k] = function() {};
+		form[k].prototype = { write() {}, renderWidget() { return {}; } };
+	});
+	const network = { registerErrorCode() {}, registerProtocol(name, proto) { return proto; } };
+	const fn = new Function('form', 'network', 'uci', 'ui', 'L', '_', 'E',
+		fs.readFileSync(SRC, 'utf8'));
+	const proto = fn(form, network, uci, {}, { resource: () => '' }, s => s, () => ({}));
+
+	let err = null;
+	try {
+		proto.renderFormOptions.call({ sid: 'qwdtt0' }, section);
+		proto.renderFormOptions.call({ sid: 'qwdtt0' }, section);
+	} catch (e) {
+		err = String(e);
+	}
+	check('rendering the same section twice does not throw', err, null);
+}
+
 // --- nothing here opens a dialog -------------------------------------------
 // The interface editor is itself a LuCI modal and there is only one: showModal
 // calls dom.content on it, so a second dialog replaces the editor rather than
@@ -338,6 +395,84 @@ function check(what, got, want) {
 		}
 	}
 	check('every handler fallback was checked', seen > 0, true);
+}
+
+// --- the ports that depend on the mode, in three places --------------------
+// The peer port has no single default any more: the handler picks one by mode,
+// the protocol page names both in the hint for the field, and the status page
+// fills one in so the Peer column says where the tunnel actually goes. Three
+// copies, and nothing at runtime would notice them disagreeing - a tunnel sent
+// at a port nobody mentioned looks exactly like a server that is not there.
+{
+	const handler = fs.readFileSync('qwdtt-client/files/qwdtt.sh', 'utf8');
+	const PAGES = [
+		'luci-proto-qwdtt/htdocs/luci-static/resources/protocol/qwdtt.js',
+		'luci-proto-qwdtt/htdocs/luci-static/resources/view/qwdtt/status.js'
+	];
+
+	const ports = {};
+	let m;
+	const re = /^QWDTT_PEER_PORT_([a-z]+)=(\d+)$/gm;
+	while ((m = re.exec(handler)) !== null)
+		ports[m[1]] = m[2];
+	check('the handler names a peer port for each mode',
+		Object.keys(ports).sort(), [ 'rawtun', 'wireguard' ]);
+
+	// The one default the handler still writes as a plain fallback, and the
+	// address the status page tells the operator to point WireGuard at.
+	const relay = (handler.match(/\$\{listen_port:-(\d+)\}/) || [])[1];
+	check('the handler has a default relay port', relay != null, true);
+
+	PAGES.forEach(path => {
+		const src = fs.readFileSync(path, 'utf8');
+		const decl = (src.match(/var PEER_PORT = \{([^}]*)\}/) || [])[1] || '';
+		const seen = {};
+		const one = /([a-z]+):\s*'(\d+)'/g;
+		let d;
+
+		while ((d = one.exec(decl)) !== null)
+			seen[d[1]] = d[2];
+
+		check(`${path} agrees with the handler on the peer ports`, seen, ports);
+		check(`${path} agrees with the handler on the relay port`,
+			(src.match(/var RELAY_PORT = '(\d+)'/) || [])[1], relay);
+	});
+}
+
+// --- a WireGuard tunnel writes no routing ----------------------------------
+// It adds no route of its own, so a rule steering the lan at its table finds
+// nothing there - and with the kill switch, that table's only route refuses
+// everything. The lan would be black-holed by a tunnel that is working, which
+// is the same failure the uninstall sweep exists for. The two flags go
+// inactive on the tab, and an inactive option is not removed unless it has
+// rmempty, which these clear; the mode field takes them instead.
+{
+	const uci = makeUci();
+	uci.add('network', 'interface', 'qwdtt0');
+	uci.set('network', 'qwdtt0', 'proto', 'qwdtt');
+
+	// created as a RAW-IP tunnel, so both sections exist to begin with
+	const opts = load(uci, { defaultroute: '1', ip4table: null });
+	check('the tunnel starts with routing to lose',
+		[ uci.get('network', 'qwdtt0_rule', 'in'),
+		  uci.get('network', 'qwdtt0_killswitch', 'type') ],
+		[ 'lan', 'unreachable' ]);
+
+	opts.mode.write('qwdtt0', 'wireguard');
+	check('switching to wireguard takes the rule and the kill switch with it',
+		[ uci.get('network', 'qwdtt0_rule'),
+		  uci.get('network', 'qwdtt0_killswitch') ], [ null, null ]);
+
+	// and the other way round leaves what is there alone
+	const back = makeUci();
+	back.add('network', 'interface', 'qwdtt0');
+	back.set('network', 'qwdtt0', 'proto', 'qwdtt');
+	const again = load(back, { defaultroute: '1', ip4table: null });
+	again.mode.write('qwdtt0', 'rawtun');
+	check('staying on rawtun keeps them',
+		[ back.get('network', 'qwdtt0_rule', 'in'),
+		  back.get('network', 'qwdtt0_killswitch', 'type') ],
+		[ 'lan', 'unreachable' ]);
 }
 
 // --- the messages the interface page shows ---------------------------------

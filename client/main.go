@@ -187,7 +187,10 @@ func main() {
 		}
 	}
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
-	connPassword := flag.String("password", fileConfig.Password, "connection password")
+	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
+	rateUp := flag.Int("rate-up", 0, "per-session upload limit to the relay, in Kbit/s (0 = unlimited)")
+	vkClientID := flag.String("vk-client-id", fileConfig.VKClientID, "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
+	vkClientSecret := flag.String("vk-client-secret", fileConfig.VKClientSec, "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
 	if captchaModeDefault == "" {
 		captchaModeDefault = "auto"
@@ -240,6 +243,26 @@ func main() {
 	if *netifd {
 		log.SetFlags(0)
 		netifdManaged = true
+	}
+	// Secrets come in the environment when the protocol handler starts this.
+	// /proc/<pid>/cmdline is readable by everyone on the router and
+	// /proc/<pid>/environ by root alone, and the password used to be in the
+	// readable one. The flags stay for a client started by hand.
+	if *connPassword == "" {
+		*connPassword = os.Getenv("QWDTT_PASSWORD")
+	}
+	if *vkClientID == "" {
+		*vkClientID = os.Getenv("QWDTT_VK_CLIENT_ID")
+	}
+	if *vkClientSecret == "" {
+		*vkClientSecret = os.Getenv("QWDTT_VK_CLIENT_SECRET")
+	}
+	if (*vkClientID == "") != (*vkClientSecret == "") {
+		log.Fatal("[CLIENT] -vk-client-id and -vk-client-secret go together")
+	}
+	if *vkClientID != "" {
+		vkCredentialsList = []VKCredentials{{ClientID: *vkClientID, ClientSecret: *vkClientSecret}}
+		log.Printf("[CLIENT] VK application %s, from the configuration", *vkClientID)
 	}
 	if *rawTunSelfTest != "" {
 		tun, testErr := createNativeRawTUN(*tunName)
@@ -315,7 +338,20 @@ func main() {
 	}
 
 	if *connPassword == "" {
-		log.Fatal("[CLIENT] -password is required: the WRAP key is now derived from the connection password")
+		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
+	}
+	// Kbit/s in, bytes/s out. The tunnel's ceiling is this times the number
+	// of sessions that come up.
+	if *rateUp > 0 {
+		sessionSendLimit = *rateUp * 125
+		log.Printf("[CLIENT] Per-session upload limit: %d Kbit/s (%d B/s) to each relay", *rateUp, sessionSendLimit)
+		// Milliseconds one full packet takes to pay for. Past 150 that wait,
+		// not the rate, is what the TCP inside reacts to; the figure is
+		// measured, not chosen.
+		if quantum := 11200 / *rateUp; quantum > 150 {
+			log.Printf("[CLIENT] At %d Kbit/s one packet takes %dms to clear, so throughput and steadiness both suffer; 64 Kbit/s or more behaves far better and is still call-sized",
+				*rateUp, quantum)
+		}
 	}
 
 	// Built once here: every packet is sealed with it.
@@ -380,17 +416,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Listen locally (SO_REUSEADDR - a quick restart without "address already in use")
-	localConn, err := listenUDP(*listen)
-	if err != nil {
-		log.Fatalf("[CLIENT] Listener error %s: %v", *listen, err)
+	// Only the modes that relay through it: a rawtun tunnel is given no local
+	// conn at all (NewDispatcherPendingTUN below), so binding one there only
+	// claimed 127.0.0.1:9000 against every other tunnel on the router.
+	var localConn net.PacketConn
+	if activeConnMode != "rawtun" {
+		conn, listenErr := listenUDP(*listen)
+		if listenErr != nil {
+			notifyNetifdListenFailed()
+			log.Fatalf("[CLIENT] Listener error %s: %v", *listen, listenErr)
+		}
+		if uc, ok := conn.(*net.UDPConn); ok {
+			_ = uc.SetReadBuffer(socketBufSize)
+			_ = uc.SetWriteBuffer(socketBufSize)
+		}
+		localConn = conn
+		stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
+		defer stopLocalConn()
+
+		// Up from this moment, and not before: the relay is listening.
+		if *netifd && activeConnMode == "vpn" {
+			if err := notifyNetifdRelayUp(); err != nil {
+				log.Printf("[NETIFD] reporting the relay up: %v", err)
+			}
+		}
 	}
-	if uc, ok := localConn.(*net.UDPConn); ok {
-		_ = uc.SetReadBuffer(socketBufSize)
-		_ = uc.SetWriteBuffer(socketBufSize)
-	}
-	stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
-	defer stopLocalConn()
 
 	_, localPort, _ := net.SplitHostPort(*listen)
 	if localPort == "" {
@@ -437,7 +487,14 @@ func main() {
 	log.Println("[CLIENT] ═══════════════════════════════════════")
 
 	stats := NewStats()
-	startNetifdTrafficWatch(ctx, cancel, stats, *tunName, peer.IP)
+	// Only a rawtun tunnel has a device of its own to send the probe through;
+	// the others have nothing to bind it to, and -tun-name then names a device
+	// that was never created.
+	probeDevice := ""
+	if activeConnMode == "rawtun" {
+		probeDevice = *tunName
+	}
+	startNetifdTrafficWatch(ctx, cancel, stats, probeDevice, peer.IP)
 
 	var disp *Dispatcher
 	if activeConnMode == "rawtun" {
@@ -551,10 +608,11 @@ func main() {
 				fmt.Printf("║ %-44s ║\n", line)
 			}
 			fmt.Println("╚══════════════════════════════════════════════╝")
-			if err := os.WriteFile("wg-turn.conf", []byte(finalConf+"\n"), 0600); err != nil {
+			confPath := netifdWGConfPath()
+			if err := os.WriteFile(confPath, []byte(finalConf+"\n"), 0600); err != nil {
 				log.Printf("[CONFIG] Error saving: %v", err)
 			} else {
-				log.Println("[CONFIG] Saved to wg-turn.conf")
+				log.Printf("[CONFIG] Saved to %s", confPath)
 			}
 
 			if activeConnMode == "socks" {

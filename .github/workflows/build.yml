@@ -201,9 +201,12 @@ jobs:
         working-directory: client
         run: go vet -tags=openwrt ./...
 
+      # -short skips the one test that resolves login.vk.ru over live DoH,
+      # which made a unit gate depend on three resolvers and VK answering.
+      # It still runs without the flag, for anyone who wants that check.
       - name: test
         working-directory: client
-        run: go test -tags=openwrt ./...
+        run: go test -tags=openwrt -short ./...
 
       # The protocol handler decides what the client is started with and
       # which configurations are refused, the conversion runs once on a router
@@ -233,6 +236,14 @@ jobs:
       # nothing at all until the traffic goes the wrong way.
       - name: LuCI routing options
         run: node luci-proto-qwdtt/tests/options.js
+
+      # The status page reads what the client and the up-script leave in
+      # /var/run/qwdtt, and a file written under a name its backend does not
+      # know is simply never read: the page shows a dash and says nothing is
+      # wrong. That is how a wireguard-mode tunnel came to report no workers
+      # at all while carrying traffic.
+      - name: LuCI status backend
+        run: node luci-proto-qwdtt/tests/runtime.js
 
   client:
     name: client ${{ matrix.name }}
