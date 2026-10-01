@@ -5,6 +5,12 @@ import (
 	"testing"
 )
 
+// Written to by the benchmarks below so the compiler cannot decide the value
+// is unused and remove the work being measured. A nonce built into a variable
+// that nothing reads is free; one that escapes is not, and the difference is
+// the whole measurement.
+var benchSink []byte
+
 // What one packet costs on the way out. The wrap path is the one that
 // allocates: unwrap is handed a destination buffer and writes into it, wrap
 // returns a fresh slice, and builds a 12-byte nonce on the heap on the way.
@@ -46,7 +52,7 @@ func BenchmarkObfsUnwrap(b *testing.B) {
 func BenchmarkObfsBuildNonce(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = obfsBuildNonce(0x11223344, uint16(i), uint32(i))
+		benchSink = obfsBuildNonce(0x11223344, uint16(i), uint32(i))
 	}
 }
 
@@ -91,7 +97,7 @@ func BenchmarkAEADSealOnly(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(payload)))
 	for i := 0; i < b.N; i++ {
-		_ = aead.Seal(dst[:0], nonce, payload, ad)
+		benchSink = aead.Seal(dst[:0], nonce, payload, ad)
 	}
 }
 
