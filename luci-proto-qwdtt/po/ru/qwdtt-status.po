@@ -1,0 +1,109 @@
+# Named for the package rather than for the view it serves. luci.mk compiles
+# each po into <basename>.<lang>.lmo and the runtime merges every file in
+# /usr/lib/lua/luci/i18n into one catalogue, so the name matters only as a path
+# on disk -- and a plain status.ru.lmo is a path any other package with a
+# status page also claims. apk then refuses to install this one, which is how
+# luci-i18n-amneziawg-ru came to own the Russian status strings on a router
+# that had both.
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: luci-proto-qwdtt\n"
+"Language: ru\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "qWDTT"
+msgstr "qWDTT"
+
+msgid "Tunnels are configured on %s: add an interface whose protocol is qWDTT, or open one that already exists to change it. This page only reports."
+msgstr "Туннели настраиваются в разделе %s: добавьте интерфейс с протоколом qWDTT или откройте существующий, чтобы его изменить. Эта страница только показывает состояние."
+
+msgid "Network -> Interfaces"
+msgstr "Сеть -> Интерфейсы"
+
+msgid "Tunnel"
+msgstr "Туннель"
+
+msgid "Peer"
+msgstr "Сервер"
+
+msgid "Hashes"
+msgstr "Хеши"
+
+msgid "Device ID"
+msgstr "Идентификатор устройства"
+
+msgid "Sessions up for"
+msgstr "Сессии установлены"
+
+msgid "Reconnects"
+msgstr "Переподключений"
+
+msgid "Local endpoint"
+msgstr "Локальная точка подключения"
+
+msgid "Captchas"
+msgstr "Капчи"
+
+msgid "Active Workers"
+msgstr "Активных воркеров"
+
+msgid "TURN relays"
+msgstr "Ретрансляторы TURN"
+
+msgid "Status"
+msgstr "Состояние"
+
+msgid "No qWDTT interfaces are configured."
+msgstr "Интерфейсы qWDTT не настроены."
+
+msgid "connecting"
+msgstr "подключается"
+
+msgid "down"
+msgstr "выключен"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "RX"
+msgstr "RX"
+
+msgid "TX"
+msgstr "TX"
+
+msgid "Pkts."
+msgstr "пакетов"
+
+msgid "Ping"
+msgstr "Пинг"
+
+msgid "Host"
+msgstr "Хост"
+
+msgid "IP address or hostname"
+msgstr "IP-адрес или имя хоста"
+
+msgid "Check a tunnel"
+msgstr "Проверка туннеля"
+
+msgid "Pings an address through the tunnel itself rather than through the router, which is what tells a tunnel that is up and carrying nothing from one that works. A WireGuard-mode tunnel is asked through the WireGuard interface that uses it, named in brackets, since that is what carries the traffic. The ping is bound to the interface rather than routed to it, so it answers before anything has been routed into the tunnel at all."
+msgstr "Пингует адрес через сам туннель, а не через роутер: именно это отличает туннель, который поднят, но ничего не передает, от работающего. Туннель в режиме wireguard опрашивается через интерфейс WireGuard, который им пользуется - он указан в скобках, потому что трафик несет именно он. Пинг привязывается к интерфейсу, а не маршрутизируется в него, поэтому отвечает еще до того, как в туннель что-либо направлено."
+
+msgid "A WireGuard-mode tunnel is checked through the WireGuard interface that uses it, and none is configured yet: add one whose peer endpoint is this tunnel local endpoint, and it will be offered here."
+msgstr "Туннель в режиме wireguard проверяется через интерфейс WireGuard, который им пользуется, а такого пока нет: заведите интерфейс, у которого узел указывает на локальную точку этого туннеля, и он появится здесь."
+
+msgid "Last received"
+msgstr "Последние входящие данные"
+
+msgid "%s ago"
+msgstr "%s назад"
+
+msgid "nothing yet"
+msgstr "ещё ничего"
+
+msgid "Error"
+msgstr "Ошибка"
+
+msgid "exit status %d"
+msgstr "код завершения %d"

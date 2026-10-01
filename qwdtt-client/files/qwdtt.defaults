@@ -1,0 +1,90 @@
+#!/bin/sh
+
+# qwdtt+ rather than qwdtt0: every tunnel gets its own device, and firewall4
+# rewrites a trailing + into a wildcard, so one zone covers all of them. The
+# network list covers the rest - an interface may be named anything, and one
+# named off-pattern would otherwise sit in no zone at all.
+#
+# The zone deliberately does NOT masquerade, and that is the one setting here
+# it would be easy to put back by mistake. The masquerade target registers a
+# notifier that flushes every conntrack entry through a device the moment that
+# device goes down, which a tunnel restart always does - and an interrupted
+# connection cannot then be picked up, because the first segment to arrive is
+# unrecognised. Measured on a router: 65 seconds to resume and the far end gone
+# before it did, against 5 seconds and an unbroken transfer without it. The
+# LAN still needs its source rewritten, so /lib/netifd/qwdtt-up.sh writes a
+# plain SNAT rule per tunnel to the address the server assigned; SNAT registers
+# no such notifier.
+#
+# input is DROP rather than the REJECT a WAN zone would use, for the same
+# reason rather than for hardening: a packet conntrack does not recognise -
+# which is what the server's in-flight segments become whenever the tunnel's
+# address does change - must not be answered with a TCP reset, or a connection
+# that was only interrupted is killed outright.
+uci -q batch <<'EOF'
+set firewall.qwdtt=zone
+set firewall.qwdtt.name='qwdtt'
+delete firewall.qwdtt.device
+add_list firewall.qwdtt.device='qwdtt+'
+delete firewall.qwdtt.network
+set firewall.qwdtt.input='DROP'
+set firewall.qwdtt.output='ACCEPT'
+set firewall.qwdtt.forward='ACCEPT'
+set firewall.qwdtt.masq='0'
+set firewall.qwdtt.mtu_fix='1'
+set firewall.qwdtt_lan=forwarding
+set firewall.qwdtt_lan.src='lan'
+set firewall.qwdtt_lan.dest='qwdtt'
+EOF
+
+for section in $(uci -q show network | sed -n "s/^network\.\([^.=]*\)\.proto='qwdtt'$/\1/p"); do
+	uci -q add_list "firewall.qwdtt.network=$section"
+done
+
+uci commit firewall
+/etc/init.d/firewall reload
+
+# Routing left behind by a tunnel that was deleted before the interface editor
+# knew to take it along. The kill switch is an unreachable default and, with
+# the tunnel gone, the only route left in a table the rule still looks up - so
+# everything that rule matches is refused outright, by a tunnel that is no
+# longer in the config and has nothing left to explain it. Both sections go:
+# with no interface they describe nothing.
+#
+# Matched on the shape this package writes rather than on the name alone, so a
+# route somebody else happened to name the same way is left where it is.
+swept=0
+for kill in $(uci -q show network | \
+	sed -n "s/^network\.\([^.=]*_killswitch\)=route$/\1/p"); do
+	section=${kill%_killswitch}
+	[ -z "$(uci -q get "network.$section")" ] || continue
+	[ "$(uci -q get "network.$kill.type")" = unreachable ] || continue
+	[ "$(uci -q get "network.$kill.interface")" = loopback ] || continue
+	logger -t qwdtt "network.$section is gone: removing $kill and ${section}_rule"
+	uci -q delete "network.$kill"
+	uci -q delete "network.${section}_rule"
+	swept=1
+done
+[ "$swept" = 0 ] || { uci commit network; /etc/init.d/network reload; }
+
+# netifd reads /lib/netifd/proto only when it starts, and fixes each protocol's
+# option list at the same moment. Neither is part of the config, so a reload
+# does not help. A protocol installed into a running system is invisible and
+# `ifup` answers NO_DEVICE; an upgrade that adds an option is quieter and
+# worse, because netifd drops the option before the handler sees it -
+# json_get_vars returns nothing, the handler's own default applies, and the
+# tunnel comes up ignoring what the operator just set.
+#
+# Comparing the options covers both: a protocol netifd has never heard of is
+# missing all of them. On a first boot netifd is not up yet and there is
+# nothing to restart.
+if handlers=$(ubus call network get_proto_handlers 2>/dev/null); then
+	for opt in $(sed -n 's/^[[:space:]]*proto_config_add_[a-z]*[[:space:]]*"\([a-z_]*\)".*/\1/p' \
+		/lib/netifd/proto/qwdtt.sh); do
+		[ -z "$(jsonfilter -s "$handlers" -e "@.qwdtt.validate.$opt")" ] || continue
+		/etc/init.d/network restart
+		break
+	done
+fi
+
+exit 0

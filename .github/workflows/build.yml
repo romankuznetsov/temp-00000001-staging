@@ -1,15 +1,254 @@
-name: OpenWrt RAW client
+# One repository, three things to build: the Go client, the OpenWrt packages
+# that wrap it, and the standalone tarballs that predate them. Publishing is
+# release.yml, which calls this workflow and acts on the artifacts it leaves.
+#
+# The jobs are split by cost rather than by product.
+#
+#   check, client      ~1 min, when code changed
+#   packages           ~8 min, when a package directory changed
+#   client-packages    ~6 min per architecture, only when publishing
+#
+# Every SDK job opens by downloading and unpacking the SDK from upstream's
+# image, which is most of its wall clock; the rest is the kernel build that
+# +kmod-tun pulls in.
+---
+name: Build
 
 on:
-  workflow_dispatch:
   push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  # Called by release.yml. Inside a called workflow github.ref and
+  # github.event_name are the CALLER's, which the conditions below rely on.
+  workflow_call:
+    inputs:
+      full:
+        description: Build everything, because the caller is publishing it
+        type: boolean
+        default: false
+    outputs:
+      ipk_sdk:
+        description: SDK tag the 24.10 packages were built with
+        value: ${{ jobs.arches.outputs.ipk_sdk }}
+      apk_sdk:
+        description: SDK tag the 25.12 packages were built with
+        value: ${{ jobs.arches.outputs.apk_sdk }}
 
 permissions:
   contents: read
 
+# Two pushes in quick succession would otherwise pay for two full builds, and
+# the first result is stale the moment the second lands. Tag runs opt out of
+# cancellation entirely, since a half-run release job is worse than a redundant
+# one. github.workflow is the CALLER's name inside a called workflow, which is
+# what separates a standalone Build from the one a Release called: without it
+# both land in the same group on a push to main and cancel each other.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GO_VERSION: "1.26.x"
+
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
+  # Most of the pipeline is wasted on a docs-only change. Diff it here and let
+  # the build jobs gate on the result: `code` guards the Go check and client
+  # build, `packages` guards the SDK packages. Tags and dispatches always
+  # build, so a release is never gated on a diff.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+      packages: ${{ steps.decide.outputs.packages }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Decide what needs building
+        id: decide
+        run: |
+          if [ "${{ inputs.full }}" = "true" ] ||
+             [ "${{ github.event_name }}" = "workflow_dispatch" ] ||
+             [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            echo "release, tag or manual run: building everything"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "packages=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A release/v* branch carries one thing by construction: PKG_VERSION
+          # in both Makefiles, which Bump version has already checked is
+          # x.y.z and which the version job checks again before publishing.
+          # Building it here spent about 18 minutes reproving that, and the
+          # release the merge starts rebuilds all of it anyway, before anything
+          # is published.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            case "${{ github.head_ref }}" in
+            release/v*)
+              echo "version bump only; the release after the merge builds it"
+              echo "code=false" >> "$GITHUB_OUTPUT"
+              echo "packages=false" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+            esac
+          fi
+
+          # The merge of that same bump lands here as a push, and its diff is
+          # both Makefiles, so the gate below would build the packages a
+          # second time. release.yml runs on this very push and calls this
+          # workflow with full: true, which is the copy that gets published --
+          # 35 minutes of the two packages jobs, for artifacts nobody reads.
+          #
+          # An unreleased version in the tree is exactly the condition
+          # release.yml uses to decide it is publishing, so ask the same
+          # question. The called run never reaches here: full: true returns
+          # above.
+          if [ "${{ github.event_name }}" = "push" ] &&
+             [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            v=$(sed -n 's/^PKG_VERSION:=[[:space:]]*//p' qwdtt-client/Makefile |
+                tr -d '[:space:]')
+            if [ -n "$v" ] && ! git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+              echo "v$v is unreleased; the Release run on this push builds it"
+              echo "code=false" >> "$GITHUB_OUTPUT"
+              echo "packages=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          # main takes pull requests only, so gating pushes alone would gate
+          # almost nothing: every change now arrives as a pull request.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+
+          # A new branch reports an all-zero before, and a force-push can name
+          # a commit that no longer exists. Neither is a diff we can trust.
+          for commit in "$base" "$head"; do
+            if [ -z "$commit" ] ||
+               [ "$commit" = "0000000000000000000000000000000000000000" ] ||
+               ! git cat-file -e "$commit^{commit}" 2>/dev/null; then
+              echo "no usable commit '$commit': building everything"
+              echo "code=true" >> "$GITHUB_OUTPUT"
+              echo "packages=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Three dots: what the branch added, not what main did meanwhile.
+            changed=$(git diff --name-only "$base...$head")
+          else
+            changed=$(git diff --name-only "$base" "$head")
+          fi
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          if echo "$changed" |
+             grep -qE '^client/|^\.github/(workflows|scripts)/|^build\.sh$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          # Wider than the package directories: the feed generator, its target
+          # map and the installer are only exercised by a release otherwise, so
+          # a break in them surfaces with a tag pushed rather than on the PR.
+          if echo "$changed" |
+             grep -qE '^(luci-proto-qwdtt|qwdtt-client|assets|keys)/|^\.github/(workflows|scripts)/|^\.github/openwrt-targets\.json$|^(install|build)\.sh$'; then
+            echo "packages=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "packages=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  check:
+    name: check
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.packages == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: client/go.sum
+
+      # Meaningful only because .gitattributes checks the tree out with LF: on
+      # a CRLF checkout gofmt reports every file and the gate says nothing.
+      - name: gofmt
+        working-directory: client
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      # -tags=openwrt on both: without it the wrong raw-socket implementation
+      # is selected, so an untagged run checks code the release never builds.
+      - name: vet
+        working-directory: client
+        run: go vet -tags=openwrt ./...
+
+      # -short skips the one test that resolves login.vk.ru over live DoH,
+      # which made a unit gate depend on three resolvers and VK answering.
+      # It still runs without the flag, for anyone who wants that check.
+      - name: test
+        working-directory: client
+        run: go test -tags=openwrt -short ./...
+
+      # The protocol handler decides what the client is started with and
+      # which configurations are refused, the conversion runs once on a router
+      # that already carries traffic, and every way either can be wrong is
+      # quiet. Nothing else here runs shell from the packages, so this is where
+      # it goes.
+      - name: netifd protocol handler
+        run: sh qwdtt-client/tests/proto.sh
+
+      - name: config conversion
+        run: sh qwdtt-client/tests/migrate.sh
+
+      # It deletes sections of /etc/config/network unattended on every install,
+      # so being too eager costs a route somebody wrote by hand and being too
+      # shy leaves the router refusing traffic for a tunnel that is gone.
+      - name: uci-defaults sweep
+        run: sh qwdtt-client/tests/defaults.sh
+
+      # An untranslated string does not fail: LuCI falls back to the English
+      # source, and the page still renders. The users this project has are
+      # Russian-speaking, so it has to be caught here or not at all.
+      - name: LuCI translations
+        run: node luci-proto-qwdtt/tests/po.js
+
+      # The routing flags write sections the operator is invited to edit by
+      # hand afterwards, and a save that quietly undoes that edit looks like
+      # nothing at all until the traffic goes the wrong way.
+      - name: LuCI routing options
+        run: node luci-proto-qwdtt/tests/options.js
+
+      # The status page reads what the client and the up-script leave in
+      # /var/run/qwdtt, and a file written under a name its backend does not
+      # know is simply never read: the page shows a dash and says nothing is
+      # wrong. That is how a wireguard-mode tunnel came to report no workers
+      # at all while carrying traffic.
+      - name: LuCI status backend
+        run: node luci-proto-qwdtt/tests/runtime.js
+
+  client:
+    name: client ${{ matrix.name }}
+    needs: [changes, check]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -26,17 +265,22 @@ jobs:
           - name: mipsel
             goarch: mipsle
             gomips: softfloat
+          - name: mips
+            goarch: mips
+            gomips: softfloat
 
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
+      - name: Check out
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: client/go.sum
 
+      # Into dist/ and not the repository root: qwdtt-client is a package
+      # directory now, so `-o ../qwdtt-client` would be writing over it.
       - name: Build static client
         working-directory: client
         env:
@@ -45,35 +289,238 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
-        run: go build -tags=openwrt -trimpath -ldflags="-s -w" -o ../qwdtt-client .
+        run: go build -tags=openwrt -trimpath -ldflags="-s -w" -o ../dist/qwdtt-client .
 
+      # The binary and its licence, nothing else. The archive used to carry an
+      # installer and a service of its own, on a UCI schema nothing else read,
+      # so the two install paths contradicted each other. Packages are the
+      # install path now; this is for dropping the binary somewhere by hand.
       - name: Pack archive
-        run: tar -czf "qwdtt-openwrt-${{ matrix.name }}.tar.gz" qwdtt-client install.sh files README.md LICENSE
+        run: |
+          cp LICENSE dist/
+          tar -C dist -czf "qwdtt-openwrt-${{ matrix.name }}.tar.gz" \
+            qwdtt-client LICENSE
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
         with:
-          name: qwdtt-openwrt-${{ matrix.name }}
+          name: tarball-${{ matrix.name }}
           path: qwdtt-openwrt-${{ matrix.name }}.tar.gz
           if-no-files-found: error
           retention-days: 90
+          # overwrite, here and on the four uploads below: a re-run sends the
+          # same names again, and without it the second attempt dies with a 409.
+          overwrite: true
 
-  release:
-    name: Publish release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+  packages:
+    name: packages ${{ matrix.arch }}
+    needs: [changes, check, arches]
+    if: needs.changes.outputs.packages == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two entries because of the package FORMAT rather than the
+        # architecture: OpenWrt replaced opkg with apk, so 24.10 emits .ipk and
+        # 25.12 emits .apk from identical sources. Both packages here set
+        # PKGARCH:=all, so one architecture serves every target.
+        arch: ${{ fromJSON(needs.arches.outputs.noarch) }}
 
     steps:
-      - name: Download archives
-        uses: actions/download-artifact@v4
-        with:
-          pattern: qwdtt-openwrt-*
-          merge-multiple: true
+      - name: Check out
+        uses: actions/checkout@v7
 
-      - name: Create GitHub release
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: client/go.sum
+
+      # luci-proto-qwdtt depends on qwdtt-client, so the SDK builds that here
+      # too and needs its binary staged. Both SDKs in this matrix are x86_64.
+      - name: Cross-compile and stage the client
+        working-directory: client
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" ./*.tar.gz --repo "$GITHUB_REPOSITORY" --title "qWDTT OpenWrt ${GITHUB_REF_NAME}" --generate-notes
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -tags=openwrt -trimpath -ldflags="-s -w" -o ../qwdtt-client/files/qwdtt-client .
+
+      - name: Build with the OpenWrt SDK
+        # Pinned, not @main. The action's entrypoint decides how the feed is
+        # wired, which packages are built and where the output lands, so
+        # tracking its default branch means an upstream commit can change this
+        # build without anything here changing. build.sh pins the same tag,
+        # because a green local build and a green CI run are only the same
+        # statement while both run the same entrypoint.
+        uses: openwrt/gh-action-sdk@v11
+        env:
+          CONTAINER: ghcr.io/openwrt/sdk
+          ARCH: ${{ matrix.arch }}
+          FEEDNAME: qwdtt
+          # qwdtt-client is not named here, but luci-proto-qwdtt depends on
+          # it, so the SDK builds it anyway. The upload below drops it:
+          # client-packages is what publishes it, once per architecture.
+          #
+          # Only source packages are named. PACKAGES becomes
+          # `make package/<name>/download`, so each entry must be a package
+          # DIRECTORY -- and luci-i18n-qwdtt-ru is not one. luci.mk defines it
+          # from the package's own Makefile by scanning po/*, so listing it
+          # fails with "No rule to make target". Building luci-proto-qwdtt
+          # emits it; the next step asserts that.
+          PACKAGES: luci-proto-qwdtt
+
+      - name: Show what was produced
+        run: |
+          # The parentheses matter. Without them find reads this as
+          #   ( -name '*.ipk' ) OR ( -name '*.apk' AND -print )
+          # because -o binds looser than the implicit AND, so an action written
+          # after the -o applies only to the second branch.
+          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) -print | sort
+          for want in luci-proto-qwdtt luci-i18n-qwdtt-ru; do
+            n=$(find bin/packages -type f \
+                  \( -name "$want*.ipk" -o -name "$want*.apk" \) | wc -l)
+            echo "$want: $n"
+            test "$n" -gt 0 || { echo "$want was not produced"; exit 1; }
+          done
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.arch }}
+          # Only our own. The SDK also builds ~100 dependency packages into
+          # bin/, and a wider glob would bury the files anybody wants.
+          path: |
+            bin/packages/*/qwdtt/*.ipk
+            bin/packages/*/qwdtt/*.apk
+            !bin/packages/*/qwdtt/qwdtt-client*
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.arch }}
+          path: logs/
+          if-no-files-found: ignore
+          overwrite: true
+
+  # Discovered from downloads.openwrt.org rather than listed here, so an
+  # architecture OpenWrt adds is built without an edit.
+  arches:
+    name: arches
+    needs: changes
+    if: needs.changes.outputs.packages == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      noarch: ${{ steps.discover.outputs.noarch }}
+      ipk_sdk: ${{ steps.discover.outputs.ipk_sdk }}
+      apk_sdk: ${{ steps.discover.outputs.apk_sdk }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Discover the package architectures
+        id: discover
+        run: |
+          set -eu
+          set -o pipefail
+          map=.github/openwrt-targets.json
+          ipk=$(jq -r '."24.10".version' "$map")
+          apk=$(jq -r '."25.12".version' "$map")
+          echo "releases: $ipk (opkg), $apk (apk)"
+
+          list=$(.github/scripts/openwrt-arches.sh "$ipk" "$apk")
+          printf '%s\n' "$list"
+
+          {
+            printf 'matrix=%s\n' "$(printf '%s\n' "$list" | jq -cs .)"
+            # The two arch-independent packages build once per format, and
+            # x86_64 is simply the architecture that serves as the host for it.
+            printf 'noarch=%s\n' "$(printf '[\"x86_64-%s\",\"x86_64-%s\"]' "$ipk" "$apk")"
+            printf 'ipk_sdk=x86_64-%s\n' "$ipk"
+            printf 'apk_sdk=x86_64-%s\n' "$apk"
+          } >> "$GITHUB_OUTPUT"
+
+  client-packages:
+    name: client package ${{ matrix.sdk }}
+    needs: [check, arches]
+    # Whenever something is being published, plus manual dispatch so a
+    # packaging change can be proven across every architecture without
+    # spending a version to find out. A release triggered by a merge is a
+    # push to main, so the ref says nothing: the caller has to.
+    if: >-
+      inputs.full ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.arches.outputs.matrix) }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: client/go.sum
+
+      - name: Cross-compile and stage the client
+        working-directory: client
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          # 64-bit MIPS reads this one; GOMIPS is ignored there.
+          GOMIPS64: ${{ matrix.gomips64 }}
+        run: go build -tags=openwrt -trimpath -ldflags="-s -w" -o ../qwdtt-client/files/qwdtt-client .
+
+      - name: Build with the OpenWrt SDK
+        uses: openwrt/gh-action-sdk@v11
+        env:
+          CONTAINER: ghcr.io/openwrt/sdk
+          ARCH: ${{ matrix.sdk }}
+          FEEDNAME: qwdtt
+          PACKAGES: qwdtt-client
+
+      - name: Show what was produced
+        run: |
+          find bin -type f \
+            \( -name 'qwdtt-client*.ipk' -o -name 'qwdtt-client*.apk' \) -print | sort
+          n=$(find bin/packages -type f \
+                \( -name 'qwdtt-client*.ipk' -o -name 'qwdtt-client*.apk' \) | wc -l)
+          test "$n" -gt 0 || { echo "qwdtt-client was not produced"; exit 1; }
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-package-${{ matrix.sdk }}
+          path: |
+            bin/packages/*/qwdtt/qwdtt-client*.ipk
+            bin/packages/*/qwdtt/qwdtt-client*.apk
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-client-${{ matrix.sdk }}
+          path: logs/
+          if-no-files-found: ignore
+          overwrite: true
