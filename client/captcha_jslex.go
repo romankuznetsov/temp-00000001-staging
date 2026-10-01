@@ -80,6 +80,15 @@ func lexJS(src string) []jsToken {
 		last := toks[len(toks)-1]
 		switch last.Kind {
 		case jsTIdent:
+			// A keyword after a dot is a property name. Minified code is full
+			// of short ones, and reading x.of as the keyword puts this in
+			// regex position, where the division that follows swallows the
+			// rest of the line - and any call in it - into one regex token.
+			if len(toks) >= 2 {
+				if p := toks[len(toks)-2]; p.Kind == jsTPunct && (p.Val == "." || p.Val == "?.") {
+					return false
+				}
+			}
 			return jsRegexPrecKw[last.Val]
 		case jsTNumber, jsTString, jsTTemplate, jsTRegex:
 			return false

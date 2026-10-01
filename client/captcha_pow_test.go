@@ -308,6 +308,38 @@ func TestLexJSTemplatesAndRegex(t *testing.T) {
 	}
 }
 
+// A keyword after a dot is a property name, not a keyword. Minified VK code
+// is full of short property names, and reading one as a keyword puts the
+// lexer in regex position: the division that follows then swallows the rest
+// of the line into one regex token, and whatever call was in it disappears.
+func TestLexJSKeywordAfterADotIsAPropertyName(t *testing.T) {
+	for _, src := range []string{"x.of / 2 / y", "x.in / 2 / y", "x.do / 2 / y", "x?.of / 2 / y"} {
+		rgx, div := 0, 0
+		for _, tok := range lexJS(src) {
+			switch {
+			case tok.Kind == jsTRegex:
+				rgx++
+			case tok.Kind == jsTPunct && tok.Val == "/":
+				div++
+			}
+		}
+		if rgx != 0 || div != 2 {
+			t.Errorf("%s: regexes=%d divisions=%d, want 0 and 2", src, rgx, div)
+		}
+	}
+
+	// The contextual keyword still introduces a regex where it really is one.
+	rgx := 0
+	for _, tok := range lexJS("for (const m of /a+/g.exec(s)) {}") {
+		if tok.Kind == jsTRegex {
+			rgx++
+		}
+	}
+	if rgx != 1 {
+		t.Errorf("for-of over a literal regex: regexes=%d, want 1", rgx)
+	}
+}
+
 func TestParseJSNumber(t *testing.T) {
 	for in, want := range map[string]int{
 		"2": 2, "0x2": 2, "0X10": 16, "0o7": 7, "0b101": 5,
