@@ -402,17 +402,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Listen locally (SO_REUSEADDR - a quick restart without "address already in use")
-	localConn, err := listenUDP(*listen)
-	if err != nil {
-		log.Fatalf("[CLIENT] Listener error %s: %v", *listen, err)
+	// Only the modes that relay through it: a rawtun tunnel is given no local
+	// conn at all (NewDispatcherPendingTUN below), so binding one there only
+	// claimed 127.0.0.1:9000 against every other tunnel on the router.
+	var localConn net.PacketConn
+	if activeConnMode != "rawtun" {
+		conn, listenErr := listenUDP(*listen)
+		if listenErr != nil {
+			notifyNetifdListenFailed()
+			log.Fatalf("[CLIENT] Listener error %s: %v", *listen, listenErr)
+		}
+		if uc, ok := conn.(*net.UDPConn); ok {
+			_ = uc.SetReadBuffer(socketBufSize)
+			_ = uc.SetWriteBuffer(socketBufSize)
+		}
+		localConn = conn
+		stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
+		defer stopLocalConn()
+
+		// Up from this moment, and not before: the relay is listening.
+		if *netifd && activeConnMode == "vpn" {
+			if err := notifyNetifdRelayUp(); err != nil {
+				log.Printf("[NETIFD] reporting the relay up: %v", err)
+			}
+		}
 	}
-	if uc, ok := localConn.(*net.UDPConn); ok {
-		_ = uc.SetReadBuffer(socketBufSize)
-		_ = uc.SetWriteBuffer(socketBufSize)
-	}
-	stopLocalConn := context.AfterFunc(ctx, func() { _ = localConn.Close() })
-	defer stopLocalConn()
 
 	_, localPort, _ := net.SplitHostPort(*listen)
 	if localPort == "" {
@@ -573,10 +587,11 @@ func main() {
 				fmt.Printf("║ %-44s ║\n", line)
 			}
 			fmt.Println("╚══════════════════════════════════════════════╝")
-			if err := os.WriteFile("wg-turn.conf", []byte(finalConf+"\n"), 0600); err != nil {
+			confPath := netifdWGConfPath()
+			if err := os.WriteFile(confPath, []byte(finalConf+"\n"), 0600); err != nil {
 				log.Printf("[CONFIG] Error saving: %v", err)
 			} else {
-				log.Println("[CONFIG] Saved to wg-turn.conf")
+				log.Printf("[CONFIG] Saved to %s", confPath)
 			}
 
 			if activeConnMode == "socks" {
