@@ -88,6 +88,12 @@ proto_kill_command() { echo "killed: $1"; }
 rm() { echo "removed: $*"; }
 
 INCLUDE_ONLY=1
+# The handler asks this directory which tunnels are running. Pointed at a
+# scratch copy so the tests can say one is without a router under them.
+QWDTT_RUN_DIR=$(mktemp -d)
+# command, because rm is stubbed below to report rather than delete.
+trap 'command rm -rf "$QWDTT_RUN_DIR"' EXIT
+export QWDTT_RUN_DIR
 . ./qwdtt-client/files/qwdtt.sh
 
 # There is no /sys here, and what the checks below are about is when the device
@@ -374,6 +380,23 @@ case $got in
 	echo "a parked tunnel reserved the port against a running one: ${got:-nothing ran}"
 	fail=1 ;;
 esac
+
+# Parking one in the configuration does not stop a relay that is already
+# running, and that one does still hold the port. Taking the configuration at
+# its word let the second bind the same address - SO_REUSEADDR allows it - and
+# split the packets with nothing downstream able to see it.
+: > "$QWDTT_RUN_DIR/wgt.wg"
+refusal "a parked but still running relay keeps its port" wgtwin DUPLICATE_LISTEN_PORT
+command rm -f "$QWDTT_RUN_DIR/wgt.wg"
+
+# And the same for one switched off rather than parked.
+set_cfg wgt.auto 1
+set_cfg wgt.disabled 1
+: > "$QWDTT_RUN_DIR/wgt.workers"
+refusal "a disabled but still running relay keeps its port" wgtwin DUPLICATE_LISTEN_PORT
+command rm -f "$QWDTT_RUN_DIR/wgt.workers"
+set_cfg wgt.disabled 0
+
 set_cfg wgt.auto 1
 
 # --- teardown ---------------------------------------------------------------
@@ -395,10 +418,10 @@ check "a teardown of a tunnel that still exists" "$got" "killed: qwdtt0"
 # list, two of which had since been joined by others - including the one
 # holding the WireGuard private key the server issued.
 got=$(proto_qwdtt_teardown gone 2>&1)
-check "a teardown of a section that has been deleted" "$got" 'killed: gone
+check "a teardown of a section that has been deleted" "$got" "killed: gone
 dropped: gone
-removed: -f /var/run/qwdtt/gone.*
-deleted: firewall.gone_snat'
+removed: -f $QWDTT_RUN_DIR/gone.*
+deleted: firewall.gone_snat"
 
 # --- the option list the uci-defaults script reads --------------------------
 

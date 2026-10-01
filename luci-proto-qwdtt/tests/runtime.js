@@ -75,11 +75,13 @@ if (stale.length)
 // private key. A glob covers every suffix at once and is what this wants to
 // find; a list is what drifted.
 const handler = fs.readFileSync('qwdtt-client/files/qwdtt.sh', 'utf8');
-const sweeps = /rm -f "\/var\/run\/qwdtt\/\$config"\.\*/.test(handler);
+// Either spelling of the run directory: the handler names it through a
+// variable so its own tests can point it somewhere writable.
+const sweeps = /rm -f "(?:\$QWDTT_RUN_DIR|\/var\/run\/qwdtt)\/\$config"\.\*/.test(handler);
 
 if (!sweeps) {
 	const removed = new Set();
-	const rm = /\/var\/run\/qwdtt\/\$config"?\.([a-z]+)/g;
+	const rm = /(?:\$QWDTT_RUN_DIR|\/var\/run\/qwdtt)\/\$config"?\.([a-z]+)/g;
 	let r;
 	while ((r = rm.exec(handler)) !== null)
 		removed.add(r[1]);

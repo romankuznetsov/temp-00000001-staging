@@ -12,6 +12,12 @@
 
 CLIENT=/usr/bin/qwdtt-client
 
+# Where the client and the up-script leave a tunnel's runtime state. On tmpfs,
+# written when the client starts and removed when the protocol is torn down,
+# so it says what is running where the configuration only says what should be.
+# Overridable so the handler's tests can look somewhere writable.
+QWDTT_RUN_DIR="${QWDTT_RUN_DIR:-/var/run/qwdtt}"
+
 # Which other qWDTT interface already answers to this device_id, if any. The
 # server takes two tunnels that share one for a single device and disconnects
 # them in turn, so the symptom is a flapping link rather than a configuration
@@ -56,6 +62,17 @@ device_id_owner() {
 # what has to be refused.
 QWDTT_PORT=
 
+# Whether a tunnel still has state in the run directory. Written when its
+# client starts and removed by teardown below, so it answers the question the
+# configuration cannot: is this one running right now.
+relay_running() {
+	local f
+	for f in "$QWDTT_RUN_DIR/$1".*; do
+		[ -e "$f" ] && return 0
+	done
+	return 1
+}
+
 qwdtt_port_claim() {
 	local section="$1" proto mode port disabled auto
 
@@ -64,11 +81,17 @@ qwdtt_port_claim() {
 	[ "$proto" = qwdtt ] || return 0
 	config_get mode "$section" mode rawtun
 	[ "$mode" = wireguard ] || return 0
-	# A tunnel the operator has parked holds no port. Whichever of the two is
-	# started first then claims it, and the second is refused on its way up.
+	# A tunnel the operator has parked holds no port, so whichever of the two
+	# is started first claims it and the second is refused on its way up.
+	# Parking it does not stop one that is already running, though, and a
+	# relay that still holds the port while the configuration says it is
+	# parked is the case worth catching: SO_REUSEADDR lets the second one
+	# bind and the packets are split with nothing downstream to notice.
 	config_get_bool disabled "$section" disabled 0
 	config_get_bool auto "$section" auto 1
-	[ "$disabled" = 0 ] && [ "$auto" != 0 ] || return 0
+	if [ "$disabled" != 0 ] || [ "$auto" = 0 ]; then
+		relay_running "$section" || return 0
+	fi
 	config_get port "$section" listen_port 9000
 	[ "$port" = "$QWDTT_PORT" ] && QWDTT_OWNER="$section"
 	return 0
@@ -348,7 +371,7 @@ proto_qwdtt_teardown() {
 	# Matched by the interface's own prefix rather than listed, because the
 	# list was already a suffix out of date twice over by the time anyone
 	# noticed.
-	rm -f "/var/run/qwdtt/$config".*
+	rm -f "$QWDTT_RUN_DIR/$config".*
 	# The SNAT rule the up-script wrote names an address nothing answers to any
 	# more, so it goes with the tunnel rather than outliving it.
 	uci -q delete "firewall.${config}_snat" || return 0
