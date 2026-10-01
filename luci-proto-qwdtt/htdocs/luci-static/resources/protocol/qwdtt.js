@@ -679,6 +679,56 @@ return network.registerProtocol('qwdtt', {
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 
+		/* Every default below is the one the protocol handler falls back to,
+		   so a new tunnel opens showing what it will actually run with instead
+		   of a row of empty fields. LuCI writes nothing for a field still equal
+		   to its default, which is what keeps the section free of options the
+		   handler would have supplied anyway. */
+
+		o = s.taboption('qwdtt', form.Value, 'go_dns', _('DNS for VK'),
+			withDefault('yandex', _('Resolver the client uses to reach VK, which is not the resolver the tunnel hands out: yandex, cloudflare or google, their doh- variants, or custom:IP and doh:URL.')));
+		o.default = 'yandex';
+
+		o = s.taboption('qwdtt', form.ListValue, 'obfs', _('Obfuscation'),
+			withDefault(_('audio'), _('What the tunnel is disguised as inside the VK call.')));
+		o.value('audio', _('audio'));
+		o.value('video', _('video'));
+		o.default = 'audio';
+
+		o = s.taboption('qwdtt', form.ListValue, 'captcha_mode', _('Captcha mode'),
+			withDefault('auto', _('How a VK captcha is answered. auto tries the built-in solver and falls back.')));
+		o.value('auto', 'auto');
+		o.value('rjs', 'rjs');
+		o.value('wv', 'wv');
+		o.default = 'auto';
+
+		/* vk_auth and vk_creds_file are not offered here. Account mode wants a
+		   supervising process to hand it fresh TURN credentials over stdin
+		   every few minutes - the phone app is one, a router is not - and the
+		   credentials a file can carry are dropped nine minutes after the
+		   client reads them, after which every worker waits five minutes for an
+		   answer that is not coming. The protocol handler still passes both, so
+		   a router that has something to feed it can set them with uci. */
+
+		o = s.taboption('qwdtt', form.ListValue, 'vk_anon_path', _('Anonymous path'),
+			withDefault('vkcalls', _('Which VK endpoint an anonymous join goes through.')));
+		o.value('vkcalls', 'vkcalls');
+		o.value('legacy', 'legacy');
+		o.default = 'vkcalls';
+
+		/* The port matters as much as the flag and is easy to miss: -listen-direct
+		   is a listener of its own, not the same one without DTLS, so a tunnel
+		   left on the default port meets a listener that will not answer it and
+		   reports the timeout as a password problem. */
+		o = s.taboption('qwdtt', form.Flag, 'no_dtls', _('Disable DTLS'),
+			withDefault(_('off'), _('Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, which is a separate listener on a port of its own - set Peer port to that port as well, or the tunnel will not come up.')));
+
+		o = s.taboption('qwdtt', form.Flag, 'turn_tcp', _('TURN over TCP'),
+			withDefault(_('off'), _('Reach the TURN relay over TCP instead of UDP. Works around UDP throttling on some networks, for example Rostelecom.')));
+
+		/* Last on the tab, and the two of them together: they are the only
+		   settings here that write sections of their own rather than a value,
+		   and the kill switch is read against the rule above it. */
 		/* Both routing flags are RAW-IP only, and not merely as a tidiness: a
 		   WireGuard-mode interface adds no route of its own, so a rule steering
 		   the LAN at its table would find nothing there - and with the kill
@@ -755,53 +805,5 @@ return network.registerProtocol('qwdtt', {
 		o.remove = function(section_id) {
 			dropSection(section_id + '_killswitch');
 		};
-
-		/* Every default below is the one the protocol handler falls back to,
-		   so a new tunnel opens showing what it will actually run with instead
-		   of a row of empty fields. LuCI writes nothing for a field still equal
-		   to its default, which is what keeps the section free of options the
-		   handler would have supplied anyway. */
-
-		o = s.taboption('qwdtt', form.Value, 'go_dns', _('DNS for VK'),
-			withDefault('yandex', _('Resolver the client uses to reach VK, which is not the resolver the tunnel hands out: yandex, cloudflare or google, their doh- variants, or custom:IP and doh:URL.')));
-		o.default = 'yandex';
-
-		o = s.taboption('qwdtt', form.ListValue, 'obfs', _('Obfuscation'),
-			withDefault(_('audio'), _('What the tunnel is disguised as inside the VK call.')));
-		o.value('audio', _('audio'));
-		o.value('video', _('video'));
-		o.default = 'audio';
-
-		o = s.taboption('qwdtt', form.ListValue, 'captcha_mode', _('Captcha mode'),
-			withDefault('auto', _('How a VK captcha is answered. auto tries the built-in solver and falls back.')));
-		o.value('auto', 'auto');
-		o.value('rjs', 'rjs');
-		o.value('wv', 'wv');
-		o.default = 'auto';
-
-		/* vk_auth and vk_creds_file are not offered here. Account mode wants a
-		   supervising process to hand it fresh TURN credentials over stdin
-		   every few minutes - the phone app is one, a router is not - and the
-		   credentials a file can carry are dropped nine minutes after the
-		   client reads them, after which every worker waits five minutes for an
-		   answer that is not coming. The protocol handler still passes both, so
-		   a router that has something to feed it can set them with uci. */
-
-		o = s.taboption('qwdtt', form.ListValue, 'vk_anon_path', _('Anonymous path'),
-			withDefault('vkcalls', _('Which VK endpoint an anonymous join goes through.')));
-		o.value('vkcalls', 'vkcalls');
-		o.value('legacy', 'legacy');
-		o.default = 'vkcalls';
-
-		/* The port matters as much as the flag and is easy to miss: -listen-direct
-		   is a listener of its own, not the same one without DTLS, so a tunnel
-		   left on the default port meets a listener that will not answer it and
-		   reports the timeout as a password problem. */
-		o = s.taboption('qwdtt', form.Flag, 'no_dtls', _('Disable DTLS'),
-			withDefault(_('off'), _('Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, which is a separate listener on a port of its own - set Peer port to that port as well, or the tunnel will not come up.')));
-
-		o = s.taboption('qwdtt', form.Flag, 'turn_tcp', _('TURN over TCP'),
-			withDefault(_('off'), _('Reach the TURN relay over TCP instead of UDP. Works around UDP throttling on some networks, for example Rostelecom.')));
-
 	}
 });
