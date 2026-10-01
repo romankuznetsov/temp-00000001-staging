@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	neturl "net/url"
@@ -32,19 +33,23 @@ const (
 )
 
 var (
-	reCaptchaV2PowInput   = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
-	reCaptchaV2Difficulty = regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`)
-	reCaptchaV2WindowInit = regexp.MustCompile(`(?s)window\.init\s*=\s*(\{.*?})\s*;`)
-	reCaptchaV2ScriptSrc  = regexp.MustCompile(`src="(https://[^"]+not_robot_captcha[^"]+)"`)
-	reCaptchaV2DebugNamed = regexp.MustCompile(`brlefapmjnpg:\s*"([^"]+)"`)
-	reCaptchaV2DebugUUID  = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
-	reCaptchaV2Version    = regexp.MustCompile(`vkid/([0-9.]*)/not_robot_captcha\.js`)
+	reCaptchaV2PowInput    = regexp.MustCompile(`const\s+powInput\s*=\s*"([^"]+)"`)
+	reCaptchaV2Difficulty  = regexp.MustCompile(`const\s+difficulty\s*=\s*(\d+)`)
+	reCaptchaV2WindowInit  = regexp.MustCompile(`(?s)window\.init\s*=\s*(\{.*?})\s*;`)
+	reCaptchaV2ScriptSrc   = regexp.MustCompile(`src="(https://[^"]+not_robot_captcha[^"]+)"`)
+	reCaptchaV2DebugNamed  = regexp.MustCompile(`brlefapmjnpg:\s*"([^"]+)"`)
+	reCaptchaV2DebugUUID   = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	reCaptchaV2Version     = regexp.MustCompile(`vkid/([0-9.]*)/not_robot_captcha\.js`)
+	reCaptchaV2DebugBundle = regexp.MustCompile(`debug_info:(?:[^"]*\|\|)?"([a-fA-F0-9]{64})"`)
+
+	// Keyed by bundle URL, so the fetch below happens at most once per script
+	// version rather than once per captcha.
+	captchaV2DebugCache sync.Map
 
 	errCaptchaV2RateLimit    = errors.New("captcha session rate limit reached")
 	errCaptchaV2Bot          = errors.New("captcha bot challenge")
 	errCaptchaSessionExpired = errors.New("captcha session expired, need fresh challenge")
 
-	captchaV2MaxAttempts     = 2
 	captchaV2MaxSliderChecks = 2
 
 	captchaV2HeaderOrder = []string{
@@ -200,9 +205,11 @@ func (s *captchaV2Session) solveOnce(captchaErr *VkCaptchaError) (string, error)
 	base := captchaV2BaseValues(captchaErr.SessionToken, s.domain)
 
 	if initShowType, initSlider, initErr := s.initSession(base); initErr != nil {
-		// Not fatal on its own: a page that still had window.init has already
-		// supplied both of these, and the check below is what decides whether
-		// what we hold is enough to go on.
+		// Survivable only where the page already said what this is: carrying
+		// on with no type picks the checkbox solver for what may be a slider.
+		if showType == "" {
+			return "", fmt.Errorf("captcha init failed and the page names no type: %w", initErr)
+		}
 		log.Printf("[CAPTCHA] v2 initSession failed: %v", initErr)
 	} else {
 		if initShowType != "" {
@@ -241,7 +248,15 @@ func (s *captchaV2Session) solveOnce(captchaErr *VkCaptchaError) (string, error)
 
 	debugInfo := page.DebugInfo
 	if debugInfo == "" {
-		return "", errors.New("captcha debug_info not found on the page")
+		// A page old enough not to assign it to window.vk still has it
+		// compiled into the bundle, which the current bundle only reads. Worth
+		// the download precisely because it is the difference between solving
+		// the captcha and not; gated on the page having none, so the common
+		// path never pays it.
+		var bundleErr error
+		if debugInfo, bundleErr = s.fetchDebugInfo(page.ScriptURL); bundleErr != nil {
+			return "", fmt.Errorf("captcha debug_info neither on the page nor in the bundle: %w", bundleErr)
+		}
 	}
 
 	var token string
@@ -520,6 +535,37 @@ func extractCaptchaDebugInfo(html string) (string, bool) {
 	// Two of them and there is nothing to choose between: sending the wrong
 	// one fails every attempt while looking like a solver that runs.
 	return "", false
+}
+
+// The same value for a page that predates window.vk carrying it, read out of
+// the bundle where it is still compiled in. Only reached when the page has
+// none, because the bundle is about seven hundred kilobytes.
+func (s *captchaV2Session) fetchDebugInfo(scriptURL string) (string, error) {
+	if scriptURL == "" {
+		return "", errors.New("no script bundle on the page to read it from")
+	}
+	if cached, ok := captchaV2DebugCache.Load(scriptURL); ok {
+		if v, ok := cached.(string); ok {
+			return v, nil
+		}
+	}
+
+	body, err := s.doRaw(fhttp.MethodGet, scriptURL, nil, map[string]string{
+		"Accept":  "text/javascript,*/*",
+		"Referer": "https://id.vk.com/",
+	})
+	if err != nil {
+		return "", err
+	}
+	m := reCaptchaV2DebugBundle.FindSubmatch(body)
+	if len(m) < 2 {
+		return "", errors.New("debug_info match not found in the bundle")
+	}
+
+	v := string(m[1])
+	captchaV2DebugCache.Store(scriptURL, v)
+	log.Printf("[CAPTCHA] v2 debug_info read from the bundle url=%s", scriptURL)
+	return v, nil
 }
 
 func parseCaptchaV2Page(html string) (*captchaV2Page, error) {
