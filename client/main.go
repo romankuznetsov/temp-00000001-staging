@@ -187,7 +187,9 @@ func main() {
 		}
 	}
 	deviceID := flag.String("device-id", deviceIDDefault, "unique device ID")
-	connPassword := flag.String("password", fileConfig.Password, "connection password")
+	connPassword := flag.String("password", fileConfig.Password, "connection password (or QWDTT_PASSWORD in the environment)")
+	vkClientID := flag.String("vk-client-id", fileConfig.VKClientID, "VK application id for the anonymous path, replacing the built-in pair (or QWDTT_VK_CLIENT_ID)")
+	vkClientSecret := flag.String("vk-client-secret", fileConfig.VKClientSec, "VK application secret to go with -vk-client-id (or QWDTT_VK_CLIENT_SECRET)")
 	captchaModeDefault := fileConfig.CaptchaMode
 	if captchaModeDefault == "" {
 		captchaModeDefault = "auto"
@@ -314,8 +316,28 @@ func main() {
 		log.Fatal("[CLIENT] No VK hashes")
 	}
 
+	// /proc/<pid>/cmdline is readable by everyone on the router and
+	// /proc/<pid>/environ by root alone, and the password used to be in the
+	// readable one. The flags stay for a client started by hand.
 	if *connPassword == "" {
-		log.Fatal("[CLIENT] -password is required: the WRAP key is now derived from the connection password")
+		*connPassword = os.Getenv("QWDTT_PASSWORD")
+	}
+	if *vkClientID == "" {
+		*vkClientID = os.Getenv("QWDTT_VK_CLIENT_ID")
+	}
+	if *vkClientSecret == "" {
+		*vkClientSecret = os.Getenv("QWDTT_VK_CLIENT_SECRET")
+	}
+	if (*vkClientID == "") != (*vkClientSecret == "") {
+		log.Fatal("[CLIENT] -vk-client-id and -vk-client-secret go together")
+	}
+	if *vkClientID != "" {
+		vkCredentialsList = []VKCredentials{{ClientID: *vkClientID, ClientSecret: *vkClientSecret}}
+		log.Printf("[CLIENT] VK application %s, from the configuration", *vkClientID)
+	}
+
+	if *connPassword == "" {
+		log.Fatal("[CLIENT] -password or QWDTT_PASSWORD is required: every packet is sealed with a key derived from it")
 	}
 
 	// Built once here: every packet is sealed with it.

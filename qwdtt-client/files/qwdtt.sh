@@ -71,6 +71,9 @@ proto_qwdtt_init_config() {
 	proto_config_add_string  "peer_host"
 	proto_config_add_int     "peer_port"
 	proto_config_add_string  "password"
+	proto_config_add_string  "config_file"
+	proto_config_add_string  "vk_client_id"
+	proto_config_add_string  "vk_client_secret"
 	proto_config_add_string  "device_id"
 	proto_config_add_array   "hash"
 	proto_config_add_int     "workers"
@@ -86,12 +89,14 @@ proto_qwdtt_init_config() {
 
 proto_qwdtt_setup() {
 	local config="$1"
-	local peer_host peer_port password device_id workers go_dns obfs
+	local peer_host peer_port password config_file vk_client_id vk_client_secret
+	local device_id workers go_dns obfs
 	local captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
 	local hashes ip4table defaultroute owner
 
-	json_get_vars peer_host peer_port password device_id workers go_dns obfs \
-		captcha_mode vk_auth vk_anon_path vk_creds_file no_dtls turn_tcp
+	json_get_vars peer_host peer_port password config_file device_id workers \
+		go_dns obfs captcha_mode vk_auth vk_anon_path vk_creds_file \
+		vk_client_id vk_client_secret no_dtls turn_tcp
 	# The client wants one comma-separated -vk value; the list arrives
 	# space-separated and a VK hash contains no spaces.
 	json_get_values hashes "hash"
@@ -117,9 +122,18 @@ proto_qwdtt_setup() {
 	# nothing to do without it and exits - and netifd starts it again the
 	# instant it does, with no backoff. Measured on a router: 349 starts in
 	# thirty seconds, with the interface page showing nothing at all.
-	[ -n "$password" ] || {
+	[ -n "$password" ] || [ -n "$config_file" ] || {
 		logger -t qwdtt "network.$config.password is not set"
 		proto_notify_error "$config" "MISSING_PASSWORD"
+		proto_block_restart "$config"
+		return 1
+	}
+	# Checked here rather than left to the client, which exits on an
+	# unreadable one. netifd would start it again the instant it does, which
+	# is the restart storm MISSING_PASSWORD above exists to prevent.
+	[ -z "$config_file" ] || [ -r "$config_file" ] || {
+		logger -t qwdtt "network.$config.config_file $config_file cannot be read"
+		proto_notify_error "$config" "UNREADABLE_CONFIG_FILE"
 		proto_block_restart "$config"
 		return 1
 	}
@@ -163,16 +177,28 @@ proto_qwdtt_setup() {
 	# its own name, so nothing else tells two tunnels apart.
 	proto_export "INTERFACE=$config"
 	proto_export "TZ=$(uci -q get system.@system[0].zonename)"
+	# Secrets travel in the environment, not on the command line:
+	# /proc/<pid>/cmdline is readable by every process on the router and
+	# /proc/<pid>/environ by root alone. The password used to be in the
+	# readable one, and in every `ps` an operator pasted into a bug report.
+	#
+	# This does not hide them completely, and config_file is the way out:
+	# netifd hands the interface's own configuration to this script as an
+	# argument and proto_export reaches ubus as one too, so anything kept in
+	# /etc/config/network is readable for as long as the interface is coming
+	# up. Only the path is, once the secrets live in the client's own file.
+	[ -z "$password" ] || proto_export "QWDTT_PASSWORD=$password"
+	[ -z "$vk_client_id" ] || proto_export "QWDTT_VK_CLIENT_ID=$vk_client_id"
+	[ -z "$vk_client_secret" ] || proto_export "QWDTT_VK_CLIENT_SECRET=$vk_client_secret"
 
-	# Built with set -- rather than one expansion per option: a value that
-	# happens to contain a space stays a single argument, and no shell ever
-	# re-parses the password.
+	# Built with set -- rather than one expansion per option, so a value that
+	# happens to contain a space stays a single argument. Nothing secret is
+	# in here any more; see the exports above.
 	set -- -netifd \
 		-mode rawtun \
 		-tun-name "$config" \
 		-peer "${peer_host}:${peer_port:-56003}" \
 		-vk "$hashes" \
-		-password "$password" \
 		-device-id "$device_id" \
 		-n "${workers:-9}" \
 		-go-dns "${go_dns:-yandex}" \
@@ -181,6 +207,7 @@ proto_qwdtt_setup() {
 		-vk-auth "${vk_auth:-anonymous}" \
 		-vk-anon-path "${vk_anon_path:-vkcalls}"
 	[ -z "$vk_creds_file" ] || set -- "$@" -vk-creds-file "$vk_creds_file"
+	[ -z "$config_file" ] || set -- "$@" -config "$config_file"
 	# Only passed when on: Go's flag package reads a bare -notls as true.
 	[ "$no_dtls" != 1 ] || set -- "$@" -notls
 	[ "$turn_tcp" != 1 ] || set -- "$@" -turn-tcp
