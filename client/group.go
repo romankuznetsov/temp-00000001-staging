@@ -273,7 +273,11 @@ func WorkerGroup(
 
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
-					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+					// "quota" is either the relay's own reason text or the
+					// "TURN quota:" the session wraps a 486 in. The bare code
+					// is not matched, for the same reason 401 no longer is:
+					// it is three digits an ephemeral port can contain.
+					isTurnQuota := strings.Contains(errStrLower, "quota")
 					quotaRetry = isTurnQuota
 					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
 						strings.Contains(errStrLower, "turn allocate auth") ||
