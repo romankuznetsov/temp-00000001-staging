@@ -21,6 +21,7 @@ import (
 	tlsclient "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 	"github.com/google/uuid"
+	"github.com/pion/stun/v3"
 )
 
 // ─── VK Credential Sets (2 stable app_id with rotating fallback) ───
@@ -30,6 +31,11 @@ type VKCredentials struct {
 	ClientSecret string
 }
 
+// The VK application the anonymous path presents itself as. Both pairs are
+// the reference client's and both are in this public repository, so VK
+// revoking either takes every router down at the same moment. main replaces
+// the list with the pair from -vk-client-id and -vk-client-secret when one is
+// given, so that a rotation is a configuration change rather than a release.
 var vkCredentialsList = []VKCredentials{
 	{ClientID: "6287487", ClientSecret: "MuAxFaKDYDOICzGnEOhp"},
 	{ClientID: "8202606", ClientSecret: "lMRsTiMCyPnp5vfoldmn"},
@@ -174,13 +180,20 @@ func cloneStringSlice(in []string) []string {
 	return out
 }
 
+// Whether a TURN failure means the credentials are bad. The relay's own answer
+// comes typed - see stunErrorCode - and is asked first; the text matches
+// behind it cover pion's own wording for the same conditions, and none of
+// them is a string a port number can contain.
 func isAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
+	switch stunErrorCode(err) {
+	case stun.CodeUnauthorized, stun.CodeStaleNonce:
+		return true
+	}
 	errStr := err.Error()
-	return strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "Unauthorized") ||
+	return strings.Contains(errStr, "Unauthorized") ||
 		strings.Contains(errStr, "authentication") ||
 		strings.Contains(errStr, "invalid credential") ||
 		strings.Contains(errStr, "stale nonce")
