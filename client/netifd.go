@@ -246,9 +246,10 @@ func reportNetifdWorkers(active int) {
 	}
 	line := fmt.Sprintf("%d %d %d %d\n", active, netifdWorkerSlots,
 		netifdReconnects, netifdConnectedAt)
-	netifdSessionMu.Unlock()
-
+	// Under the lock that built it: released first, two goroutines could
+	// write in the order they did not build in, and the older line would win.
 	writeNetifdRunFile("workers", line)
+	netifdSessionMu.Unlock()
 }
 
 // When the tunnel last carried a byte, which is the one thing on the status
@@ -500,12 +501,12 @@ func reportNetifdRelay(addr string, delta int) {
 	for a := range netifdRelaySlots {
 		addrs = append(addrs, a)
 	}
-	netifdRelayMu.Unlock()
-
 	// Sorted, or the page reshuffles the list on every poll for want of an
-	// order of its own.
+	// order of its own. Both under the lock that collected the addresses,
+	// for the same reason as the worker line above.
 	sort.Strings(addrs)
 	writeNetifdRunFile("relays", strings.Join(addrs, " ")+"\n")
+	netifdRelayMu.Unlock()
 }
 
 // How often VK has put a captcha in front of this tunnel, and how often the
@@ -542,7 +543,6 @@ func reportNetifdCaptcha(sid string, solved bool) {
 		netifdCaptchaSolved++
 	}
 	line := fmt.Sprintf("%d %d\n", netifdCaptchaSolved, netifdCaptchaFaced)
-	netifdCaptchaMu.Unlock()
-
 	writeNetifdRunFile("captcha", line)
+	netifdCaptchaMu.Unlock()
 }

@@ -414,13 +414,16 @@ return network.registerProtocol('qwdtt', {
 			var seeded = freeTable();
 
 			uci.set('network', s.section, 'ip4table', seeded);
-			/* The same visit is the only one at which a tunnel is known to have
-			   no routing of its own yet, so it is where both routing flags get
-			   to start on. Carrying the LAN is what a tunnel is added for, and a
-			   tunnel that releases it to the WAN the moment it drops is a
-			   surprise rather than a convenience. Either is one click off. */
-			addLanRule(s.section, seeded);
-			addKillswitch(s.section, seeded);
+			/* This visit is the only one at which a tunnel is known to have
+			   no routing yet, so it is where both flags start on - either is
+			   one click off. Not for a wireguard-mode tunnel, which carries
+			   nothing: a rule at its table would send the LAN at a table
+			   whose one route refuses everything. Its table is still seeded,
+			   being inert there and wanted the moment it becomes rawtun. */
+			if (uci.get('network', s.section, 'mode') != 'wireguard') {
+				addLanRule(s.section, seeded);
+				addKillswitch(s.section, seeded);
+			}
 		}
 
 		/* First, because it decides what the rest of the tab means: in

@@ -89,6 +89,17 @@ func lexJS(src string) []jsToken {
 					return false
 				}
 			}
+			// "of" is the one entry that can also be a variable name, so it
+			// is the keyword only after a binding: a name, or the close of a
+			// destructuring pattern.
+			if last.Val == "of" {
+				if len(toks) < 2 {
+					return false
+				}
+				p := toks[len(toks)-2]
+				return p.Kind == jsTIdent ||
+					(p.Kind == jsTPunct && (p.Val == "]" || p.Val == "}"))
+			}
 			return jsRegexPrecKw[last.Val]
 		case jsTNumber, jsTString, jsTTemplate, jsTRegex:
 			return false
@@ -199,6 +210,23 @@ func lexJS(src string) []jsToken {
 						}
 					case '\n':
 						// line continuation: produces nothing
+					case '\r':
+						// CRLF is one line terminator. Taken as two, the \r landed in
+						// the value and the \n after it ended the string as though it
+						// were unterminated.
+						if i+1 < n && src[i+1] == '\n' {
+							i++
+						}
+					case 0xE2:
+						// U+2028 and U+2029 terminate a line as well, and are three
+						// bytes each in UTF-8. Left alone they put a stray two bytes
+						// into the value.
+						if i+2 < n && src[i+1] == 0x80 &&
+							(src[i+2] == 0xA8 || src[i+2] == 0xA9) {
+							i += 2
+						} else {
+							b = append(b, esc)
+						}
 					default:
 						b = append(b, esc)
 					}
