@@ -99,8 +99,13 @@ func WorkerGroup(
 
 		// Asking again will not revive a dead hash, and the interface should be
 		// told rather than left waiting behind a tunnel that is not coming up.
+		// A CallUnavailableError is the same dead end - the call ended or the
+		// join link is invalid - and VK phrases it in neither string below, so
+		// it is caught by type or it retries for ever.
 		errStr := err.Error()
-		if strings.Contains(errStr, "хеш мёртв") ||
+		_, deadCall := asCallUnavailableError(err)
+		if deadCall ||
+			strings.Contains(errStr, "хеш мёртв") ||
 			strings.Contains(errStr, "FATAL_AUTH") {
 			log.Printf("[GROUP #%d] Fatal credentials error: %v", groupID, err)
 			notifyNetifdError(errStr)

@@ -65,6 +65,10 @@ func TestNetifdErrorCode(t *testing.T) {
 		{"FATAL_AUTH: wrong connection password", "QWDTT_WRONG_PASSWORD"},
 		{"FATAL_AUTH: access denied (banned)", "QWDTT_AUTH_FAILED"},
 		{"хеш мёртв", "QWDTT_HASH_DEAD"},
+		// A dead call reaches here as a CallUnavailableError, whose text has to
+		// map to the same code or the group would retry it for ever.
+		{(&CallUnavailableError{Code: 951, Message: "call not found"}).Error(), "QWDTT_HASH_DEAD"},
+		{(&CallUnavailableError{Code: 954}).Error(), "QWDTT_HASH_DEAD"},
 		{"TURN Allocate: error 401", ""},
 		{"", ""},
 	}
