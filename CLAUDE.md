@@ -29,6 +29,18 @@ was measured rather than chosen, a literal that looks translatable but is
 load-bearing. Keep it to a line or two. If the reason needs a paragraph, it is
 not a comment.
 
+## The README
+
+The README and the other docs in the `docs/` folder are the maintainer's to
+shape. Users and developers read them at a router, and a steady drip of
+added detail, restructured sections and rewritten lines costs them more than
+it gives. Do not edit them as a side effect of other work.
+
+When a change you make leaves the README wrong, or you notice it is already
+inconsistent or misleading, say so and propose the edit - in your message or
+as a diff to review - then stop. Apply it only when the maintainer asks for
+it. What goes in, and how it is arranged, is their decision.
+
 ## Commits
 
 Scope first, then a short subject: `client:`, `ci:`, `docs:`, `comments:`,
