@@ -84,7 +84,7 @@ msgid "Adds a rule routing the LAN into this tunnel; narrow it on Network -> Rou
 msgstr "Правило, направляющее LAN в туннель; сузить можно в Сеть -> Маршрутизация."
 
 msgid "This needs \"Use default gateway\" under Advanced Settings: without it the tunnel adds no default route for the rule to find, and the LAN would reach nothing."
-msgstr "Для этого нужен включённый параметр \"Использовать шлюз по умолчанию\" в дополнительных настройках: без него туннель не добавляет маршрут по умолчанию, и правилу нечего будет найти, а локальная сеть останется без доступа."
+msgstr "Для этого нужен включенный параметр \"Использовать шлюз по умолчанию\" в дополнительных настройках: без него туннель не добавляет маршрут по умолчанию, и правилу нечего будет найти, а локальная сеть останется без доступа."
 
 msgid "Workers"
 msgstr "Воркеры"
@@ -204,7 +204,7 @@ msgid "Upload speed limit (per session)"
 msgstr "Ограничение скорости отдачи (на сессию)"
 
 msgid "Download speed limit (per session)"
-msgstr "Ограничение скорости приёма (на сессию)"
+msgstr "Ограничение скорости приема (на сессию)"
 
 msgid "Kbit/s each session may send to its VK relay."
 msgstr "Сколько Кбит/с каждая сессия может отдавать своему ретранслятору VK."

@@ -100,7 +100,7 @@ msgid "%s ago"
 msgstr "%s назад"
 
 msgid "nothing yet"
-msgstr "ещё ничего"
+msgstr "еще ничего"
 
 msgid "Error"
 msgstr "Ошибка"
