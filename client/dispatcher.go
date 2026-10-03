@@ -238,9 +238,14 @@ func (d *Dispatcher) Register(w *WorkerSlot) {
 	// fewer sessions than it has until the next change. Safe to hold: the
 	// limiters take only their own lock and never come back here.
 	setTunnelSessions(count)
+	// Under the lock as well, so two registrations that race publish their
+	// counts in the order they took them. Written after releasing it, the
+	// earlier count could land last and leave the status page one behind until
+	// something changed again. The write is a small tmpfs file and these
+	// happen only as sessions come and go, not per packet.
+	d.reportWorkers(count)
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d registered (total: %d)", w.ID, count)
-	d.reportWorkers(count)
 }
 
 func (d *Dispatcher) Unregister(slot *WorkerSlot) {
@@ -258,9 +263,9 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 	}
 	d.rrCount = 0
 	setTunnelSessions(remaining)
+	d.reportWorkers(remaining)
 	d.mu.Unlock()
 	log.Printf("[DISP] Worker #%d disconnected (remaining: %d)", slot.ID, remaining)
-	d.reportWorkers(remaining)
 }
 
 // readLoop reads packets (from the local WG loopback or the TUN) and spreads
