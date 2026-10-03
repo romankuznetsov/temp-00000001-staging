@@ -463,8 +463,12 @@ function checkSection(nets) {
 			body: 'sessionid=%s&command=%s'.format(
 				encodeURIComponent(L.env.sessionid), encodeURIComponent(command))
 		}).then(function(res) {
+			/* Not a throw: that would skip straight to .catch and never reach
+			   the fs.exec fallback below, leaving the box showing only
+			   "Error: Forbidden" when the cgi-exec rule does not match.
+			   Returning lets the next step run the same ping through rpcd. */
 			if (!res.ok)
-				throw new Error(res.statusText || res.status);
+				return;
 
 			/* A browser without a readable body stream still gets the output,
 			   just all at once, which is what this replaced. */
