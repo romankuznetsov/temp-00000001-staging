@@ -54,6 +54,7 @@ var netifdErrors = []struct{ contains, code string }{
 	{"the password has expired", "QWDTT_PASSWORD_EXPIRED"},
 	{"wrong connection password", "QWDTT_WRONG_PASSWORD"},
 	{"хеш мёртв", "QWDTT_HASH_DEAD"},
+	{"VK call is unavailable", "QWDTT_HASH_DEAD"},
 	{"FATAL_AUTH", "QWDTT_AUTH_FAILED"},
 }
 
@@ -451,7 +452,7 @@ func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, sta
 			// server has answered with an address and the up-script has run,
 			// so there is nothing to bind to before then.
 			if probe == nil {
-				p, err := newTunnelProbe(ctx, device)
+				p, err := newTunnelProbe(ctx, device, server)
 				if err != nil {
 					// Tried again on the next tick rather than given up on:
 					// the usual reason is a device that has no address yet.

@@ -49,7 +49,7 @@ func (e *CallUnavailableError) Error() string {
 		return "VK call is unavailable"
 	}
 	if e.Message != "" {
-		return fmt.Sprintf("VK returns error: %s (error_code=%d)", e.Message, e.Code)
+		return fmt.Sprintf("VK call is unavailable: %s (error_code=%d)", e.Message, e.Code)
 	}
 	return fmt.Sprintf("VK call is unavailable (error_code=%d)", e.Code)
 }
