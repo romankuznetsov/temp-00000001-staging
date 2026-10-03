@@ -198,6 +198,13 @@ func classifyCallAround(toks []jsToken, k int, source string, markerMode bool) (
 	if len(seedCandidates) != 1 {
 		return nil, false
 	}
+	// In marker mode the page is obfuscated, so there is no `const difficulty`
+	// to fall back to. A call carrying an array but no number in 1..16 leaves
+	// difficulty at 0, which cannot be solved; report no seed so the caller
+	// tries another path rather than failing the page on a seed it cannot use.
+	if markerMode && difficulty == 0 {
+		return nil, false
+	}
 	seed.PowInput = seedCandidates[0]
 	seed.Difficulty = difficulty
 	return seed, true
