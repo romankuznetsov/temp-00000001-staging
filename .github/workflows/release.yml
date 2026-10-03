@@ -374,7 +374,7 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           assets=$(find dist -type f \
-            \( -name '*.tar.gz' -o -name '*.ipk' -o -name '*.apk' \) | sort)
+            \( -name '*-key.tar.gz' -o -name '*.ipk' -o -name '*.apk' \) | sort)
           echo "$assets"
 
           # Fail loudly rather than let the upload silently drop one of a pair:
