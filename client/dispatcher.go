@@ -10,61 +10,73 @@ import (
 	"time"
 )
 
+// Every packet in both directions goes through this pool, which exists so
+// that the packet path allocates nothing. Pointers to arrays rather than
+// slices: a slice put into the pool is boxed into an interface, and boxing a
+// 24-byte header is an allocation - one per packet, measured at 24 B/op on
+// the very path the pool is meant to keep clean. A pointer fits in the
+// interface word and costs nothing.
+const pktBufSize = 2048
+
 var pktPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 2048)
-	},
+	New: func() any { return new([pktBufSize]byte) },
 }
 
 func getPktBuf(size int) []byte {
-	b := pktPool.Get().([]byte)
-	if cap(b) < size {
-		b = make([]byte, size)
+	if size > pktBufSize {
+		return make([]byte, size)
 	}
-	return b[:size]
+	return pktPool.Get().(*[pktBufSize]byte)[:size]
 }
 
 func putPktBuf(b []byte) {
-	if cap(b) < 2048 {
+	if cap(b) < pktBufSize {
 		return
 	}
-	pktPool.Put(b[:cap(b)])
+	pktPool.Put((*[pktBufSize]byte)(b[:pktBufSize]))
 }
 
 const (
-	// returnChBuf — глубина канала пакетов, готовых к записи в TUN. При RTT
-	// ~50-60мс и целевой скорости 70-80 Мбит/с BDP ≈ 440-600КБ; при MTU~1300
-	// это ~340-460 пакетов. 384 слота были впритык к этому потолку, отсюда
-	// запас до 512 (тот же порядок, что использует референсный клиент).
+	// returnChBuf is the depth of the channel of packets ready to be written
+	// to the TUN. At an RTT of ~50-60ms and a target of 70-80 Mbit/s the BDP is
+	// ≈ 440-600KB; at MTU~1300 that is ~340-460 packets. 384 slots sat right on
+	// that ceiling, hence the headroom to 512 (what the reference client uses).
 	returnChBuf = 512
 	prioBuf     = 32
 
-	// maxDwellMS — сколько максимум миллисекунд подряд пакеты одного клиента
-	// идут через один и тот же worker, даже если chunk по счётчику ещё не
-	// закончился. Подстраховка на случай, если конкретный relay начал тормозить:
-	// не ждём весь chunk, переключаемся раньше.
+	// maxDwellMS is the longest run of milliseconds during which one client's
+	// packets keep going through the same worker, even if the chunk counter has
+	// not run out yet. A safeguard for when one relay starts to lag: rather than
+	// wait out the whole chunk, switch earlier.
 	maxDwellMS = 15
 
-	// prioThreshold — пакеты размером до этого числа байт (в первую очередь
-	// TCP ACK) идут через отдельный приоритетный канал (PrioCh) каждого
-	// worker'а, минуя обычную chunk-очередь. Иначе ACK может застрять за
-	// большим chunk'ом данных на медленном relay, и рост TCP-окна тормозится.
+	// prioThreshold: packets up to this many bytes (TCP ACKs above all) go
+	// through each worker's own priority channel (PrioCh), bypassing the
+	// ordinary chunk queue. Otherwise an ACK can get stuck behind a large chunk
+	// of data on a slow relay, and the TCP window stops growing.
 	prioThreshold = 128
+
+	// How long readLoop waits after a read error before trying again, doubling
+	// while they keep coming. The floor is what a transient error deserves; the
+	// ceiling is there because an error that does not clear never will, and
+	// retrying it a hundred times a second costs a core and proves nothing.
+	readErrBackoffMin = 10 * time.Millisecond
+	readErrBackoffMax = time.Second
 )
 
-// chunkSizeFor — сколько подряд пакетов такого размера отправлять в один
-// worker, прежде чем переключиться на следующий.
+// chunkSizeFor is how many consecutive packets of that size to send to one
+// worker before switching to the next.
 //
-// Зачем вообще chunk, а не round-robin по одному пакету: при round-robin
-// каждый пакет летит через разный TURN relay с разным latency, что даёт
-// reorder на другой стороне. TCP внутри туннеля интерпретирует reorder как
-// потери → cwnd collapse → скорость single-flow падает до считанных KB/s.
+// Why chunks at all, rather than round-robin one packet at a time: with
+// round-robin every packet flies through a different TURN relay with its own
+// latency, which reorders them on the far side. TCP inside the tunnel reads
+// reorder as loss → cwnd collapse → single-flow speed drops to a few KB/s.
 //
-// Почему размер зависит от размера пакета: крупные пакеты (объёмные данные)
-// разумно группировать покрупнее — меньше переключений relay на мегабайт
-// трафика. Мелкие пакеты (ACK, keepalive) — быстро переключать или вовсе
-// уводить в приоритетный канал (см. prioThreshold), чтобы не накапливать
-// задержку на управляющем трафике.
+// Why the size depends on the packet size: large packets (bulk data) are
+// worth grouping more coarsely - fewer relay switches per megabyte of
+// traffic. Small packets (ACK, keepalive) want switching quickly, or moving
+// into the priority channel altogether (see prioThreshold), so that control
+// traffic does not accumulate delay.
 func chunkSizeFor(pktSize int) int {
 	switch {
 	case pktSize > 1100:
@@ -87,46 +99,43 @@ type WorkerSlot struct {
 }
 
 type Dispatcher struct {
-	tunReadCount    uint64
-	tunSentCount    uint64
 	tunDroppedCount uint64
 
-	localConn    net.PacketConn
-	tunFile      *os.File // не nil в -mode rawtun: сырые IP-пакеты вместо локального WG-loopback
-	ready        chan struct{}
-	clientAddr   atomic.Pointer[net.Addr]
-	mu           sync.Mutex
-	workers      []*WorkerSlot
-	rrIndex      int
-	rrCount      int   // сколько пакетов отправлено в текущий worker в рамках текущего chunk'а
-	lastPktTime  int64 // unix millis последнего пакета — для сброса chunk'а после паузы
-	chunkStartTs int64 // unix millis начала текущего chunk'а — для maxDwellMS
-	ReturnCh     chan []byte
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	stats        *Stats
+	localConn     net.PacketConn
+	tunFile       *os.File // not nil in -mode rawtun: raw IP packets instead of the local WG loopback
+	ready         chan struct{}
+	clientAddr    atomic.Pointer[net.Addr]
+	mu            sync.Mutex
+	workers       []*WorkerSlot
+	rrIndex       int
+	rrCount       int   // packets sent to the current worker within the current chunk
+	lastPktTime   int64 // unix millis of the last packet - to reset the chunk after a pause
+	chunkStartTs  int64 // unix millis of the current chunk's start - for maxDwellMS
+	ReturnCh      chan []byte
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	stats         *Stats
 	firstPktUp    uint32
 	firstPktDown  uint32
-	firstReadErr  uint32
 	firstWriteErr uint32
 
-	// Диагностика TUN-пути (rawtun): сколько пакетов реально прочитано из TUN,
-	// сколько ушло в воркеры (SendCh/PrioCh) и сколько молча дропнуто из-за
-	// перегрузки всех воркеров (строка ~358, putPktBuf без лога). Нужны, чтобы
-	// отличить "трафик из TUN не читается вообще" от "читается, но дропается
-	// из-за перегруженных воркеров" — оба выглядят одинаково снаружи (сервер
-	// не видит пакетов от клиента), но чинятся по-разному.
+	// TUN-path diagnostics (rawtun): how many packets were really read from the
+	// TUN, how many went to the workers (SendCh/PrioCh), and how many were
+	// dropped silently because every worker was overloaded (line ~358, putPktBuf
+	// with no log). Needed to tell "traffic from the TUN is not read at all"
+	// from "it is read, but dropped by overloaded workers" - both look the same
+	// from outside (the server sees no packets), but they are fixed differently.
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
 	dctx, dcancel := context.WithCancel(ctx)
 	ready := make(chan struct{})
-	close(ready) // localConn уже доступен — читаем/пишем сразу, как и раньше
+	close(ready) // localConn is already available - read/write at once, as before
 	d := &Dispatcher{
 		localConn: localConn,
 		ready:     ready,
-		ReturnCh:  make(chan []byte, returnChBuf),
+		ReturnCh:  make(chan []byte, returnChBufFor()),
 		ctx:       dctx,
 		cancel:    dcancel,
 		stats:     stats,
@@ -138,16 +147,16 @@ func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) 
 	return d
 }
 
-// NewDispatcherPendingTUN — вариант для -mode rawtun: TUN-fd ещё не получен
-// от Android на момент старта воркеров (Android поднимает TUN только ПОСЛЕ
-// того, как сервер назначит IP/DNS/MTU через RAWCONF — см. protocol.go
-// RequestRawConfig). Горутины readLoop/writeLoop стартуют сразу, но ждут
-// AttachTUN() прежде чем начать реальный ввод-вывод.
+// NewDispatcherPendingTUN is the -mode rawtun variant: the TUN fd has not
+// arrived from Android by the time the workers start (Android brings the TUN
+// up only AFTER the server assigns IP/DNS/MTU through RAWCONF - see
+// protocol.go RequestRawConfig). The readLoop/writeLoop goroutines start at
+// once, but wait for AttachTUN() before doing any real I/O.
 func NewDispatcherPendingTUN(ctx context.Context, stats *Stats) *Dispatcher {
 	dctx, dcancel := context.WithCancel(ctx)
 	d := &Dispatcher{
 		ready:    make(chan struct{}),
-		ReturnCh: make(chan []byte, returnChBuf),
+		ReturnCh: make(chan []byte, returnChBufFor()),
 		ctx:      dctx,
 		cancel:   dcancel,
 		stats:    stats,
@@ -159,24 +168,84 @@ func NewDispatcherPendingTUN(ctx context.Context, stats *Stats) *Dispatcher {
 	return d
 }
 
-// AttachTUN подключает полученный от Android TUN-fd к уже запущенному
-// диспетчеру и снимает блокировку с readLoop/writeLoop.
+// AttachTUN connects the TUN fd received from Android to an already running
+// dispatcher and unblocks readLoop/writeLoop.
 func (d *Dispatcher) AttachTUN(f *os.File) {
 	d.tunFile = f
 	close(d.ready)
+
+	// The sessions that registered while there was nothing to attach them to
+	// have been reported as carrying nothing, which they were. Now they are.
+	d.mu.Lock()
+	count := len(d.workers)
+	d.mu.Unlock()
+	d.reportWorkers(count)
 }
 
+// Whether there is anything to carry traffic on yet. In rawtun mode the
+// device does not exist until the server has answered with an address, and
+// until then a registered worker cannot move a packet however well its
+// session went.
+func (d *Dispatcher) attached() bool {
+	select {
+	case <-d.ready:
+		return true
+	default:
+		return false
+	}
+}
+
+// The count as the status page should read it: how many sessions are carrying
+// traffic, not how many exist. A tunnel whose server never answered reported
+// thirty-six of thirty-six while it had no device at all, which is the most
+// reassuring number on the page saying the opposite of the truth.
+func (d *Dispatcher) reportWorkers(count int) {
+	if !d.attached() {
+		count = 0
+	}
+	reportNetifdWorkers(count)
+}
+
+// Bounded, because readLoop can be parked in a blocking read on the TUN device
+// that nothing is able to end: the fd is deliberately blocking, so closing it
+// does not interrupt a read already in flight, and an idle tunnel may never
+// deliver the packet that would return it. Waiting for that is what left the
+// client running after SIGTERM until whoever stopped it gave up and sent
+// SIGKILL. The only caller is the defer in main, on the way out, and neither
+// loop holds anything that has to be flushed first.
 func (d *Dispatcher) Shutdown() {
 	d.cancel()
-	d.wg.Wait()
+
+	stopped := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+	}
 }
 
 func (d *Dispatcher) Register(w *WorkerSlot) {
 	d.mu.Lock()
 	d.workers = append(d.workers, w)
 	count := len(d.workers)
+	// Under the lock, so the rate the limiter ends up with is the one that
+	// goes with the last count published. Two registrations racing outside it
+	// can publish in either order, and the loser leaves the tunnel paced for
+	// fewer sessions than it has until the next change. Safe to hold: the
+	// limiters take only their own lock and never come back here.
+	setTunnelSessions(count)
+	// Under the lock as well, so two registrations that race publish their
+	// counts in the order they took them. Written after releasing it, the
+	// earlier count could land last and leave the status page one behind until
+	// something changed again. The write is a small tmpfs file and these
+	// happen only as sessions come and go, not per packet.
+	d.reportWorkers(count)
 	d.mu.Unlock()
-	log.Printf("[ДИСП] Воркер #%d зарегистрирован (всего: %d)", w.ID, count)
+	log.Printf("[DISP] Worker #%d registered (total: %d)", w.ID, count)
 }
 
 func (d *Dispatcher) Unregister(slot *WorkerSlot) {
@@ -188,29 +257,31 @@ func (d *Dispatcher) Unregister(slot *WorkerSlot) {
 		}
 	}
 	remaining := len(d.workers)
-	// Подстраховка: если текущий rrIndex вылез за границу после удаления
+	// Safeguard: if the current rrIndex went out of bounds after the removal
 	if d.rrIndex >= remaining && remaining > 0 {
 		d.rrIndex = d.rrIndex % remaining
 	}
 	d.rrCount = 0
+	setTunnelSessions(remaining)
+	d.reportWorkers(remaining)
 	d.mu.Unlock()
-	log.Printf("[ДИСП] Воркер #%d отключён (осталось: %d)", slot.ID, remaining)
+	log.Printf("[DISP] Worker #%d disconnected (remaining: %d)", slot.ID, remaining)
 }
 
-// readLoop читает пакеты (из локального WG-loopback или TUN) и распределяет
-// по workers адаптивными chunk'ами.
+// readLoop reads packets (from the local WG loopback or the TUN) and spreads
+// them across the workers in adaptive chunks.
 //
-// Логика: отправляем chunkSizeFor(размер) подряд пакетов в один worker, потом
-// переходим к следующему. Если текущий worker перегружен (канал полный) —
-// немедленно ищем свободный worker и начинаем новый chunk на нём. Маленькие
-// пакеты (вероятно ACK, см. prioThreshold) уходят через отдельный
-// приоритетный канал, минуя очередь данных. maxDwellMS — предохранитель:
-// если текущий relay начал тормозить, не ждём весь chunk целиком. Это
-// гарантирует:
-//   - В рамках chunk пакеты идут через один TURN relay → in-order delivery
-//   - Между chunks — разные relay → максимальная агрегатная скорость
-//   - ACK не застревают за большими chunk'ами данных на медленном relay
-//   - Нет блокировки, нет буферизации сверх необходимого
+// How it works: send chunkSizeFor(size) consecutive packets to one worker,
+// then move on to the next. If the current worker is overloaded (its channel
+// is full), look for a free worker at once and start a new chunk there. Small
+// packets (probably ACKs, see prioThreshold) go through the separate
+// priority channel, bypassing the data queue. maxDwellMS is the safety
+// catch: if the current relay starts to lag, do not wait out the whole
+// chunk. This guarantees:
+//   - Within a chunk packets go through one TURN relay → in-order delivery
+//   - Between chunks - different relays → maximum aggregate throughput
+//   - ACKs do not get stuck behind large data chunks on a slow relay
+//   - No blocking, and no buffering beyond what is needed
 func (d *Dispatcher) readLoop() {
 	defer d.wg.Done()
 
@@ -220,10 +291,12 @@ func (d *Dispatcher) readLoop() {
 	case <-d.ready:
 	}
 	if d.tunFile != nil {
-		rawDiagf("readLoop: разблокирован, начинаю читать из tunFile (fd=%v)", d.tunFile.Fd())
+		rawDiagf("readLoop: unblocked, starting to read from tunFile (fd=%v)", d.tunFile.Fd())
 	}
 
 	buf := make([]byte, readBufSize)
+	readErrs := 0
+	backoff := readErrBackoffMin
 	for {
 		if err := d.ctx.Err(); err != nil {
 			return
@@ -241,35 +314,41 @@ func (d *Dispatcher) readLoop() {
 			if d.ctx.Err() != nil {
 				return
 			}
-			if atomic.CompareAndSwapUint32(&d.firstReadErr, 0, 1) {
+			// An error that does not clear - the device deleted under a running
+			// client is how it happens - used to retry every 10ms for ever with
+			// only the first one logged. That is a hundred failures a second on
+			// a router already spending most of a core carrying the tunnel, and
+			// nothing in the log after the first line to say why.
+			readErrs++
+			if readErrs == 1 || readErrs%50 == 0 {
 				src := "localConn"
 				if d.tunFile != nil {
 					src = "tunFile"
 				}
-				rawDiagf("readLoop: первая ошибка чтения из %s: %v", src, err)
+				rawDiagf("readLoop: read error #%d from %s: %v", readErrs, src, err)
 			}
-			time.Sleep(10 * time.Millisecond)
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < readErrBackoffMax {
+				backoff *= 2
+			}
 			continue
 		}
+		readErrs, backoff = 0, readErrBackoffMin
 
 		if d.tunFile == nil {
 			d.clientAddr.Store(&addr)
 		}
 		d.stats.TotalBytesUp.Add(int64(n))
 
-		if d.tunFile != nil {
-			c := atomic.AddUint64(&d.tunReadCount, 1)
-			if c%200 == 0 {
-				rawDiagf("readLoop: прочитано из TUN=%d отправлено=%d дропнуто=%d",
-					c, atomic.LoadUint64(&d.tunSentCount), atomic.LoadUint64(&d.tunDroppedCount))
-			}
-		}
-
 		if atomic.CompareAndSwapUint32(&d.firstPktUp, 0, 1) {
 			if d.tunFile != nil {
-				log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ пакет от TUN (%d байт)", n)
+				log.Printf("[DISP] [DEBUG] Received the FIRST packet from the TUN (%d bytes)", n)
 			} else {
-				log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ пакет от локального WireGuard (%d байт) с адреса %s", n, addr.String())
+				log.Printf("[DISP] [DEBUG] Received the FIRST packet from the local WireGuard (%d bytes) from address %s", n, addr.String())
 			}
 		}
 
@@ -289,16 +368,16 @@ func (d *Dispatcher) readLoop() {
 		lastTime := d.lastPktTime
 		d.lastPktTime = now
 		if lastTime > 0 && now-lastTime > 10 {
-			// Была пауза >10мс — предыдущий chunk уже не даёт выгоды от
-			// affinity, начинаем новый со следующего worker'а.
+			// There was a pause >10ms - the previous chunk no longer benefits
+			// from affinity, so start a new one on the next worker.
 			d.rrIndex = (d.rrIndex + 1) % nw
 			d.rrCount = 0
 			d.chunkStartTs = now
 		}
 
-		// Маленькие пакеты (вероятно ACK) — отдельный приоритетный канал с
-		// фолбэком на любой другой worker, чтобы не застревать за большим
-		// chunk'ом данных на текущем relay.
+		// Small packets (probably ACKs) get the separate priority channel,
+		// falling back to any other worker, so they do not get stuck behind
+		// a large chunk of data on the current relay.
 		if pktSize <= prioThreshold {
 			idx := d.rrIndex % nw
 			sentPrio := false
@@ -319,13 +398,10 @@ func (d *Dispatcher) readLoop() {
 				}
 			}
 			if sentPrio {
-				if d.tunFile != nil {
-					atomic.AddUint64(&d.tunSentCount, 1)
-				}
 				d.mu.Unlock()
 				continue
 			}
-			// Все приоритетные каналы заняты — падаем в обычную очередь ниже.
+			// Every priority channel is busy - fall through to the ordinary queue below.
 		}
 
 		chunk := chunkSizeFor(pktSize)
@@ -333,8 +409,8 @@ func (d *Dispatcher) readLoop() {
 		if d.chunkStartTs == 0 {
 			d.chunkStartTs = now
 		} else if now-d.chunkStartTs >= maxDwellMS {
-			// Текущий relay слишком долго держит chunk — переключаемся,
-			// не дожидаясь конца chunk'а по счётчику.
+			// The current relay has held the chunk too long - switch without
+			// waiting for the chunk counter to run out.
 			d.rrIndex = (d.rrIndex + 1) % nw
 			d.rrCount = 0
 			d.chunkStartTs = now
@@ -343,7 +419,7 @@ func (d *Dispatcher) readLoop() {
 		sent := false
 		idx := d.rrIndex % nw
 
-		// Пробуем текущий worker (chunk affinity)
+		// Try the current worker (chunk affinity)
 		w := d.workers[idx]
 		select {
 		case w.SendCh <- pkt:
@@ -355,14 +431,14 @@ func (d *Dispatcher) readLoop() {
 				d.chunkStartTs = now
 			}
 		default:
-			// Текущий worker перегружен — ищем свободный, начинаем новый chunk
+			// The current worker is overloaded - find a free one, start a new chunk
 			for i := 1; i < nw; i++ {
 				altIdx := (idx + i) % nw
 				select {
 				case d.workers[altIdx].SendCh <- pkt:
 					sent = true
 					d.rrIndex = altIdx
-					d.rrCount = 1 // первый пакет нового chunk'а уже отправлен
+					d.rrCount = 1 // the first packet of the new chunk has already been sent
 					d.chunkStartTs = now
 				default:
 				}
@@ -372,19 +448,15 @@ func (d *Dispatcher) readLoop() {
 			}
 		}
 
-		if sent {
-			if d.tunFile != nil {
-				atomic.AddUint64(&d.tunSentCount, 1)
-			}
-		} else {
-			// Все workers перегружены — сдвигаем указатель, пакет дропается
+		if !sent {
+			// Every worker is overloaded - advance the pointer, the packet is dropped
 			d.rrIndex = (idx + 1) % nw
 			d.rrCount = 0
 			putPktBuf(pkt)
 			if d.tunFile != nil {
 				c := atomic.AddUint64(&d.tunDroppedCount, 1)
 				if c == 1 || c%50 == 0 {
-					rawDiagf("readLoop: пакет из TUN ДРОПНУТ — все воркеры перегружены (дропнуто всего=%d)", c)
+					rawDiagf("readLoop: packet from TUN DROPPED -- all workers are overloaded (dropped in total=%d)", c)
 				}
 			}
 		}
@@ -406,9 +478,24 @@ func (d *Dispatcher) writeLoop() {
 		case <-d.ctx.Done():
 			return
 		case pkt := <-d.ReturnCh:
+			// The one place every packet from every relay leaves by, so the
+			// one place the download direction can be paced. Shaped rather
+			// than limited, and the difference matters: the packet is here
+			// because the relay already carried it, and nothing done now
+			// un-sends it. Holding it makes the flows inside the tunnel slow
+			// down - their self-clocking stretches and ReturnCh tail-drops
+			// the excess - so less is asked for and less crosses the relay a
+			// round trip later. Traffic that does not answer congestion, UDP
+			// above all, is only thrown away after VK has already counted it.
+			if tunnelRecvLimiter != nil {
+				if err := tunnelRecvLimiter.WaitN(d.ctx, len(pkt)); err != nil {
+					putPktBuf(pkt)
+					return
+				}
+			}
 			if d.tunFile != nil {
 				if atomic.CompareAndSwapUint32(&d.firstPktDown, 0, 1) {
-					log.Printf("[ДИСП] [ДЕБАГ] Отправляем ПЕРВЫЙ пакет обратно в TUN (%d байт)", len(pkt))
+					log.Printf("[DISP] [DEBUG] Sending the FIRST packet back into the TUN (%d bytes)", len(pkt))
 				}
 				if _, err := d.tunFile.Write(pkt); err != nil {
 					if d.ctx.Err() != nil {
@@ -416,7 +503,7 @@ func (d *Dispatcher) writeLoop() {
 						return
 					}
 					if atomic.CompareAndSwapUint32(&d.firstWriteErr, 0, 1) {
-						rawDiagf("writeLoop: первая ошибка записи в tunFile: %v", err)
+						rawDiagf("writeLoop: first write error to tunFile: %v", err)
 					}
 				}
 				d.stats.TotalBytesDown.Add(int64(len(pkt)))
@@ -431,7 +518,7 @@ func (d *Dispatcher) writeLoop() {
 			}
 			addr := *addrPtr
 			if atomic.CompareAndSwapUint32(&d.firstPktDown, 0, 1) {
-				log.Printf("[ДИСП] [ДЕБАГ] Отправляем ПЕРВЫЙ пакет обратно локальному WireGuard (%d байт) на адрес %s", len(pkt), addr.String())
+				log.Printf("[DISP] [DEBUG] Sending the FIRST packet back to the local WireGuard (%d bytes) to address %s", len(pkt), addr.String())
 			}
 			if _, err := d.localConn.WriteTo(pkt, addr); err != nil {
 				if d.ctx.Err() != nil {

@@ -1,0 +1,549 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// A qWDTT tunnel's address, resolvers and MTU are not known until the server
+// answers, so netifd cannot be given them when the interface is brought up. It
+// is told afterwards, the way udhcpc tells it about a lease: the protocol
+// handler starts this client, and this client runs the up-script once RAWCONF
+// arrives. Shelling out rather than speaking ubus keeps the client free of a
+// ubus dependency and puts the netifd calls where every other OpenWrt daemon
+// protocol puts them.
+const netifdUpScript = "/lib/netifd/qwdtt-up.sh"
+
+const netifdErrorScript = "/lib/netifd/qwdtt-error.sh"
+
+const netifdRelayUpScript = "/lib/netifd/qwdtt-relay-up.sh"
+
+// Shared with /lib/netifd/qwdtt-up.sh, which writes the counter baseline
+// beside these files. On tmpfs, so everything in it lasts exactly one boot,
+// which is as long as the tunnel device does.
+const netifdRunDir = "/var/run/qwdtt"
+
+// How many worker slots the client settled on after its own clamping, so that
+// the status page can say "4 of 9" rather than a bare count that means nothing
+// without the total beside it.
+var netifdWorkerSlots int
+
+// Set when -netifd is given, because the workers that hit a fatal condition
+// are several call frames away from the flag and have no other reason to know
+// how the client was started.
+var netifdManaged bool
+
+// Refusals a reconnect cannot clear. Told to netifd, they appear against the
+// interface on Network -> Interfaces; left in the log, they are a line the
+// operator has to go looking for while the tunnel retries for ever.
+//
+// Matched on the message rather than plumbed through from where the server's
+// DENIED reason is parsed, so that protocol.go stays free of netifd: it is
+// shared with a build that has none.
+var netifdErrors = []struct{ contains, code string }{
+	{"the password is bound to another device", "QWDTT_DEVICE_MISMATCH"},
+	{"the password has expired", "QWDTT_PASSWORD_EXPIRED"},
+	{"wrong connection password", "QWDTT_WRONG_PASSWORD"},
+	{"хеш мёртв", "QWDTT_HASH_DEAD"},
+	{"VK call is unavailable", "QWDTT_HASH_DEAD"},
+	{"FATAL_AUTH", "QWDTT_AUTH_FAILED"},
+}
+
+func netifdErrorCode(message string) string {
+	for _, e := range netifdErrors {
+		if strings.Contains(message, e.contains) {
+			return e.code
+		}
+	}
+	return ""
+}
+
+// Reported once. Every worker meets the same refusal, and netifd wants to know
+// what is wrong with the interface, not how many streams noticed.
+var netifdErrorOnce sync.Once
+
+func notifyNetifdError(message string) {
+	code := netifdErrorCode(message)
+	if !netifdManaged || code == "" {
+		return
+	}
+	netifdErrorOnce.Do(func() {
+		if err := runNativeCommandEnv([]string{"ERROR=" + code}, netifdErrorScript); err != nil {
+			log.Printf("[NETIFD] reporting %s: %v", code, err)
+		}
+	})
+}
+
+// How many times the server may ignore the configuration request before the
+// interface is told.
+//
+// The one refusal the server cannot state is the one that matters most here.
+// Every packet is sealed with a key derived from the connection password, so
+// a wrong password leaves the server unable to read the request at all: there
+// is no DENIED to send back and nothing arrives. From this side that is a
+// timeout, which is also what an unreachable server looks like, so the code
+// says both and neither is guessed at.
+//
+// Three, because one is a lost packet and the tunnel would have retried
+// anyway. The restart is deliberately not blocked: a server that is merely
+// down comes back, and an interface that had blocked would not.
+const netifdNoConfigAttempts = 3
+
+var (
+	netifdNoConfigMu   sync.Mutex
+	netifdNoConfigSeen int
+	netifdNoConfigOnce sync.Once
+)
+
+func reportNetifdConfigTimeout() {
+	if !netifdManaged {
+		return
+	}
+
+	netifdNoConfigMu.Lock()
+	netifdNoConfigSeen++
+	enough := netifdNoConfigSeen >= netifdNoConfigAttempts
+	netifdNoConfigMu.Unlock()
+
+	if !enough {
+		return
+	}
+	netifdNoConfigOnce.Do(func() {
+		log.Printf("[NETIFD] the server has not answered the configuration request %d times, telling the interface",
+			netifdNoConfigAttempts)
+		if err := runNativeCommandEnv([]string{"ERROR=QWDTT_NO_CONFIG", "BLOCK=0"}, netifdErrorScript); err != nil {
+			log.Printf("[NETIFD] reporting QWDTT_NO_CONFIG: %v", err)
+		}
+	})
+}
+
+// Called when the server does answer, so a tunnel that came up after a slow
+// start is not left counting failures towards a report it no longer deserves.
+func clearNetifdConfigTimeout() {
+	netifdNoConfigMu.Lock()
+	netifdNoConfigSeen = 0
+	netifdNoConfigMu.Unlock()
+}
+
+func notifyNetifd(device, address, dnsCSV string, mtu int) error {
+	if os.Getenv("INTERFACE") == "" {
+		return fmt.Errorf("INTERFACE is unset: -netifd only works under the qwdtt protocol handler")
+	}
+	return runNativeCommandEnv(netifdUpEnv(device, address, dnsCSV, mtu), netifdUpScript)
+}
+
+// A wireguard-mode tunnel is up once the relay holds its local port, which is
+// the only thing it promises. Reported from here rather than by the protocol
+// handler: the handler returns as soon as the client is started and cannot
+// tell a relay that bound from one whose port was already taken.
+//
+// The placeholder device is named after the interface, as the TUN device of a
+// RAW-IP tunnel is.
+func notifyNetifdRelayUp() error {
+	iface := os.Getenv("INTERFACE")
+	if iface == "" {
+		return fmt.Errorf("INTERFACE is unset: -netifd only works under the qwdtt protocol handler")
+	}
+	return runNativeCommandEnv([]string{"DEVICE=" + iface}, netifdRelayUpScript)
+}
+
+// The relay could not open its local endpoint at all - an address that is not
+// ours to bind, or a port privileged against us. Not the case of another
+// relay already there: SO_REUSEADDR lets that one bind quite happily, which
+// is why the handler refuses it from the configuration instead.
+//
+// Blocked, because none of what does reach here clears on a retry, and netifd
+// would otherwise start the client again several times a second with nothing
+// on the interface page to say why.
+func notifyNetifdListenFailed() {
+	if !netifdManaged {
+		return
+	}
+	if err := runNativeCommandEnv([]string{"ERROR=QWDTT_LISTEN_FAILED"}, netifdErrorScript); err != nil {
+		log.Printf("[NETIFD] reporting QWDTT_LISTEN_FAILED: %v", err)
+	}
+}
+
+// The up-script iterates DNS unquoted, so the separator has to be whitespace.
+// Splitting rather than replacing drops the empty fields a trailing comma would
+// otherwise turn into an empty resolver.
+func netifdUpEnv(device, address, dnsCSV string, mtu int) []string {
+	servers := strings.FieldsFunc(dnsCSV, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+	return []string{
+		"DEVICE=" + device,
+		"IPADDR=" + address,
+		"DNS=" + strings.Join(servers, " "),
+		"MTU=" + strconv.Itoa(mtu),
+	}
+}
+
+// Where a WireGuard configuration the server issues is kept. The default is
+// relative to the working directory, which under netifd is /lib/netifd/proto -
+// the package's own directory, and the same file for every tunnel on the
+// router. 0600 rather than the 0644 the run files get: this one holds the
+// private key.
+func netifdWGConfPath() string {
+	iface := os.Getenv("INTERFACE")
+	if !netifdManaged || iface == "" {
+		return "wg-turn.conf"
+	}
+	if err := os.MkdirAll(netifdRunDir, 0755); err != nil {
+		return "wg-turn.conf"
+	}
+	return filepath.Join(netifdRunDir, iface+".wg")
+}
+
+func writeNetifdRunFile(suffix, content string) {
+	iface := os.Getenv("INTERFACE")
+	if !netifdManaged || iface == "" {
+		return
+	}
+	if err := os.MkdirAll(netifdRunDir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(netifdRunDir, iface+"."+suffix), []byte(content), 0644)
+}
+
+// How the tunnel's sessions are doing, written where the status page can read
+// it. The dispatcher is the only thing that knows, and it learns by workers
+// arriving and leaving rather than at any one moment, so this is rewritten on
+// each change rather than sampled.
+//
+// Three facts come out of the same transitions. How many workers are carrying
+// traffic is the obvious one. How many have had to be re-established since the
+// client started is the one that shows a tunnel flapping: a worker that drops
+// is rebuilt, so the count climbing is churn nothing else reports. And the
+// moment the tunnel last had no session at all is what the page counts
+// "connected for" from - distinct from the interface uptime, which netifd
+// keeps running through an outage the sessions did not survive.
+var (
+	netifdSessionMu   sync.Mutex
+	netifdPrevActive  int
+	netifdReconnects  int
+	netifdConnectedAt int64
+)
+
+func reportNetifdWorkers(active int) {
+	netifdSessionMu.Lock()
+	if active < netifdPrevActive {
+		netifdReconnects += netifdPrevActive - active
+	}
+	netifdPrevActive = active
+	if active == 0 {
+		netifdConnectedAt = 0
+	} else if netifdConnectedAt == 0 {
+		netifdConnectedAt = time.Now().Unix()
+	}
+	line := fmt.Sprintf("%d %d %d %d\n", active, netifdWorkerSlots,
+		netifdReconnects, netifdConnectedAt)
+	// Under the lock that built it: released first, two goroutines could
+	// write in the order they did not build in, and the older line would win.
+	writeNetifdRunFile("workers", line)
+	netifdSessionMu.Unlock()
+}
+
+// When the tunnel last carried a byte, which is the one thing on the status
+// page that answers "is it working".
+//
+// Everything else there is counted from a session being established: a worker
+// registers when its session reports ready, so the worker count and the clock
+// started from it both go on rising while the server accepts the sessions and
+// forwards nothing. That state has been seen for hours at a time, reading as a
+// tunnel eight hours healthy.
+//
+// Inbound only. What this has to answer is whether the far end is still
+// delivering, and bytes this client sent prove nothing about that: a curl
+// through a tunnel that carries nothing still fills the outbound counter, and
+// counting it put "last traffic: 2 seconds ago" on a tunnel that had delivered
+// nothing for hours - the very reading this exists to stop.
+//
+// Sampled rather than stamped per packet: the dispatcher already counts the
+// bytes on the data path, so a ticker comparing the total costs one comparison
+// every few seconds instead of a write per packet.
+const netifdTrafficTick = 5 * time.Second
+
+// How long the tunnel may deliver nothing before the client pokes it, and how
+// long before it stops believing in it.
+//
+// Nothing in the client notices a tunnel that has stopped delivering. Every
+// session can be established and every worker registered while the far end
+// forwards none of it: the Reader re-arms its read deadline on every timeout
+// rather than giving up, the relay reader has no deadline at all, and the
+// result of the periodic TURN binding refresh is discarded. Measured on a
+// router, the tunnel sat in that state for seven and a half hours, showing
+// thirty-six of thirty-six workers, no reconnects and a session clock at
+// fourteen hours, and one ifdown/ifup put it right in twenty seconds.
+//
+// Silence alone cannot be the trigger. The server answers nothing on an idle
+// tunnel - measured, the only thing coming back is one STUN binding response
+// per session per ten seconds, from the relay rather than from the server -
+// so a watchdog on silence restarts a tunnel nobody is using. An earlier
+// attempt inferred it instead, from the LAN sending while nothing came back,
+// and that missed the outage above entirely: the router was not sending, so
+// there was nothing to infer from.
+//
+// So the client makes the traffic itself. After netifdProbeAfter of nothing
+// arriving it sends an echo through the tunnel to the server every tick, and
+// a reply is inbound traffic like any other, which puts the question beyond
+// inference: either the tunnel delivers the answer or it delivers nothing.
+const (
+	netifdProbeAfter = 30 * time.Second
+	// Long, because giving up costs more than waiting does. Rebuilding the
+	// interface takes one to three and a half minutes before the workers are
+	// back, so a gap shorter than that is cheaper to sit through than to act
+	// on - and on a mobile uplink the gaps are long. Measured on a router
+	// behind a phone hotspot: inbound stopped for 124 seconds and then
+	// resumed on its own, with two minutes of unanswered probes in the
+	// middle. At the old two minutes this watch was restarting tunnels that
+	// were about to recover, and each restart costs the server another set
+	// of sessions to time out.
+	//
+	// The fault this exists for looked nothing like that: seven and a half
+	// hours of silence on a wired router, which five minutes still catches.
+	netifdStallTimeout = 5 * time.Minute
+	// How long to keep asking for a first answer before concluding that this
+	// server does not answer echoes at all. Long enough to cover the tunnel
+	// coming up, which is the device appearing, the sessions establishing and
+	// the server assigning an address.
+	netifdProbeArmFor = 5 * time.Minute
+)
+
+// What the watch does at a given moment. Pulled out of the loop and given a
+// test because getting it wrong takes down a working tunnel.
+//
+// idle is how long since anything at all arrived, age how long the client has
+// been running, and answered whether the server has ever replied to a probe.
+//
+// Silence only means something once the server has answered once: one that
+// never does may simply not reply to an echo, and taking its tunnel down every
+// two minutes over that would be worse than the fault being looked for.
+//
+// Which is why the asking cannot wait for silence. A tunnel that dies is a
+// tunnel that goes quiet, so a probe sent only after things go quiet is, on a
+// tunnel that has died, also the first probe ever sent - and there is nothing
+// to compare it against. Found on a router: a tunnel carried 480MB, stopped,
+// and the watch sat disarmed through eight minutes of unanswered probes,
+// because none had been sent during the part where it was working. So while
+// there is no answer yet the probe goes out on every tick, working or not,
+// until the server answers or the window closes.
+func netifdWatchAction(idle, age time.Duration, answered bool) (probe, giveUp bool) {
+	if !answered {
+		return age < netifdProbeArmFor, false
+	}
+	if idle < netifdProbeAfter {
+		return false, false
+	}
+	return true, idle >= netifdStallTimeout
+}
+
+// The same question for a wireguard-mode tunnel, which has no device to probe
+// through and needs none: WireGuard's PersistentKeepalive (25s, from the
+// config the server issues) keeps outbound traffic flowing whether or not the
+// tunnel is in use, so a stall is outbound still moving while nothing comes
+// back. received gates it the way `answered` gates the RAW-IP watch - a relay
+// that has never delivered is misconfigured rather than stalled, and giving it
+// up every five minutes fixes none of the causes. TestNetifdRelayStalled holds
+// each of these readings.
+func netifdRelayStalled(idleIn, idleOut time.Duration, received bool) bool {
+	return received && idleIn >= netifdStallTimeout && idleOut < netifdStallTimeout
+}
+
+func startNetifdTrafficWatch(ctx context.Context, cancel context.CancelFunc, stats *Stats, device string, server net.IP) {
+	if !netifdManaged || stats == nil {
+		return
+	}
+
+	go func() {
+		t := time.NewTicker(netifdTrafficTick)
+		defer t.Stop()
+
+		var last int64
+		var seenAt int64
+		var probe *tunnelProbe
+		var probeErr bool
+		// Outside the probe's lifetime on purpose. A send that fails closes the
+		// socket and builds a new one, and a fresh tunnelProbe has answered
+		// nothing - so reading the flag off the probe made one failed send look
+		// like a server that had never replied, which past netifdProbeArmFor
+		// stops the watch probing at all and leaves it unable to give the
+		// tunnel up for the rest of its life.
+		var answered bool
+		defer func() {
+			if probe != nil {
+				probe.close()
+			}
+		}()
+
+		// Counted from the client starting rather than from the first byte, so
+		// a tunnel that never delivers anything is still probed. Escalating on
+		// one is a separate question, and netifdWatchAction answers it.
+		started := time.Now()
+		lastSeen := started
+
+		// The outbound side, which only a wireguard-mode tunnel reads: a
+		// relay with nothing pointed at it never sends, and must never be
+		// mistaken for one whose far end has stopped answering.
+		var lastSent int64
+		sentAt := lastSeen
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+
+			now := time.Now()
+			total := stats.TotalBytesDown.Load()
+			if total != last {
+				last = total
+				seenAt = now.Unix()
+				lastSeen = now
+			}
+			// Written every tick rather than only on change, so a page reading
+			// it can tell "nothing yet" from a file nobody has updated.
+			writeNetifdRunFile("traffic", fmt.Sprintf("%d %d\n", seenAt, total))
+
+			// A wireguard-mode tunnel, which is watched by what it is already
+			// carrying rather than by a probe it has no device to send. See
+			// netifdRelayStalled.
+			if device == "" {
+				if sent := stats.TotalBytesUp.Load(); sent != lastSent {
+					lastSent = sent
+					sentAt = now
+				}
+				if netifdRelayStalled(now.Sub(lastSeen), now.Sub(sentAt), total > 0) {
+					log.Printf("[NETIFD] the relay has been sending for %v with nothing coming back, giving the interface up so it is rebuilt",
+						now.Sub(lastSeen).Truncate(time.Second))
+					cancel()
+					return
+				}
+				continue
+			}
+
+			idle := now.Sub(lastSeen)
+			if probe != nil && probe.everAnswered() {
+				answered = true
+			}
+			shouldProbe, giveUp := netifdWatchAction(idle, now.Sub(started), answered)
+
+			if giveUp {
+				log.Printf("[NETIFD] nothing has come back through the tunnel for %v, and the server has stopped answering it, giving the interface up so it is rebuilt",
+					idle.Truncate(time.Second))
+				cancel()
+				return
+			}
+			if !shouldProbe {
+				continue
+			}
+
+			// Opened late on purpose: the device does not exist until the
+			// server has answered with an address and the up-script has run,
+			// so there is nothing to bind to before then.
+			if probe == nil {
+				p, err := newTunnelProbe(ctx, device, server)
+				if err != nil {
+					// Tried again on the next tick rather than given up on:
+					// the usual reason is a device that has no address yet.
+					// Said once, or it is said every five seconds until it
+					// has one.
+					if !probeErr {
+						probeErr = true
+						log.Printf("[NETIFD] cannot probe the tunnel yet: %v", err)
+					}
+					continue
+				}
+				probe, probeErr = p, false
+			}
+			if err := probe.send(server); err != nil {
+				log.Printf("[NETIFD] probing the tunnel: %v", err)
+				// The address it is bound to has most likely moved. A fresh
+				// socket picks the new one up, so drop this one and let the
+				// next tick build it again.
+				probe.close()
+				probe = nil
+			}
+		}
+	}()
+}
+
+// Which VK relays the tunnel is actually on. A session picks one out of the
+// list its credentials came with and stays on it, and that list is the wrong
+// thing to report: it names relays that were offered and never answered. So
+// the sessions are counted per address, and an address is listed for as long
+// as one is holding it.
+var (
+	netifdRelayMu    sync.Mutex
+	netifdRelaySlots = map[string]int{}
+)
+
+func reportNetifdRelay(addr string, delta int) {
+	if !netifdManaged {
+		return
+	}
+
+	netifdRelayMu.Lock()
+	netifdRelaySlots[addr] += delta
+	if netifdRelaySlots[addr] < 1 {
+		delete(netifdRelaySlots, addr)
+	}
+	addrs := make([]string, 0, len(netifdRelaySlots))
+	for a := range netifdRelaySlots {
+		addrs = append(addrs, a)
+	}
+	// Sorted, or the page reshuffles the list on every poll for want of an
+	// order of its own. Both under the lock that collected the addresses,
+	// for the same reason as the worker line above.
+	sort.Strings(addrs)
+	writeNetifdRunFile("relays", strings.Join(addrs, " ")+"\n")
+	netifdRelayMu.Unlock()
+}
+
+// How often VK has put a captcha in front of this tunnel, and how often the
+// client got past it. Nothing else says so: a captcha the solver answers leaves
+// the tunnel working and shows up nowhere, and a captcha it cannot answer looks
+// from the outside like credentials that will not come, so the two are worth
+// telling apart on the page.
+//
+// Counted per challenge rather than per attempt. The solver is called again for
+// the same captcha up to three times, and VK identifies the challenge by its
+// sid, so a repeat of a sid already seen is the same captcha being retried.
+var (
+	netifdCaptchaMu     sync.Mutex
+	netifdCaptchaSeen   = map[string]bool{}
+	netifdCaptchaFaced  int
+	netifdCaptchaSolved int
+)
+
+func reportNetifdCaptcha(sid string, solved bool) {
+	if !netifdManaged {
+		return
+	}
+
+	netifdCaptchaMu.Lock()
+	// An empty sid cannot be told apart from the last one, so it counts as its
+	// own challenge rather than silently folding into another.
+	if sid == "" || !netifdCaptchaSeen[sid] {
+		if sid != "" {
+			netifdCaptchaSeen[sid] = true
+		}
+		netifdCaptchaFaced++
+	}
+	if solved {
+		netifdCaptchaSolved++
+	}
+	line := fmt.Sprintf("%d %d\n", netifdCaptchaSolved, netifdCaptchaFaced)
+	writeNetifdRunFile("captcha", line)
+	netifdCaptchaMu.Unlock()
+}

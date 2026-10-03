@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/cipher"
 	"log"
 	"math/rand"
 	"net"
@@ -11,16 +12,15 @@ import (
 	"time"
 )
 
-
 const workersPerGroup = 9
 
-// allocateGateInterval — минимальный интервал между TURN Allocate-запросами
-// внутри одной группы воркеров (см. комментарий у allocateTicker в
-// WorkerGroup). Тот же порядок величины, что у free-turn-proxy (200ms).
+// allocateGateInterval is the minimum interval between TURN Allocate requests
+// within one worker group (see the comment on allocateTicker in
+// WorkerGroup). The same order of magnitude as free-turn-proxy (200ms).
 const allocateGateInterval = 200 * time.Millisecond
 
 // WorkerGroup:
-// Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
+// Starts 9 streams on one set of credentials. There is no rotation - it runs until the workers die.
 func WorkerGroup(
 	ctx context.Context,
 	groupID int,
@@ -38,9 +38,9 @@ func WorkerGroup(
 	waitReady <-chan struct{},
 	signalReady chan<- struct{},
 ) {
-	// Каскадный запуск: ждем свою очередь
+	// Cascaded start: wait for our turn
 	if waitReady != nil {
-		log.Printf("[ГРУППА #%d] Ожидание сигнала от предыдущей группы...", groupID)
+		log.Printf("[GROUP #%d] Waiting for the signal from the previous group...", groupID)
 		select {
 		case <-waitReady:
 		case <-ctx.Done():
@@ -53,7 +53,7 @@ func WorkerGroup(
 		configSent = 1
 	}
 
-	// Doze-mode пауза
+	// Doze-mode pause
 	for atomic.LoadInt32(pauseFlag) != 0 {
 		if ctx.Err() != nil {
 			return
@@ -66,19 +66,65 @@ func WorkerGroup(
 	if len(shortHash) > 8 {
 		shortHash = shortHash[:8]
 	}
-	log.Printf("[ГРУППА #%d] Запрос кредов (хеш: %s...)", groupID, shortHash)
+	log.Printf("[GROUP #%d] Requesting credentials (hash: %s...)", groupID, shortHash)
+
+	// The next group waits on this, so it has to be released whatever happens
+	// below. A group that returned without handing the baton on left every
+	// later group blocked for ever, and main's wg.Wait() with them: the client
+	// stayed alive doing nothing, which is also why netifd never restarted it.
+	var handedOver sync.Once
+	handOver := func() bool {
+		released := false
+		if signalReady != nil {
+			handedOver.Do(func() {
+				close(signalReady)
+				released = true
+			})
+		}
+		return released
+	}
+	defer handOver()
 
 	credStreamID := groupID * 100
-	user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
 	var creds *Credentials
-	if err == nil {
-		creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
-	} else {
-		log.Printf("[ГРУППА #%d] Ошибка кредов: %v", groupID, err)
-		return
+	for attempt := 1; ; attempt++ {
+		user, pass, turnURLs, err := GetCreds(ctx, hash, credStreamID)
+		if err == nil {
+			creds = &Credentials{User: user, Pass: pass, TurnURLs: turnURLs, CacheStreamID: credStreamID}
+			break
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Asking again will not revive a dead hash, and the interface should be
+		// told rather than left waiting behind a tunnel that is not coming up.
+		// A CallUnavailableError is the same dead end - the call ended or the
+		// join link is invalid - and VK phrases it in neither string below, so
+		// it is caught by type or it retries for ever.
+		errStr := err.Error()
+		_, deadCall := asCallUnavailableError(err)
+		if deadCall ||
+			strings.Contains(errStr, "хеш мёртв") ||
+			strings.Contains(errStr, "FATAL_AUTH") {
+			log.Printf("[GROUP #%d] Fatal credentials error: %v", groupID, err)
+			notifyNetifdError(errStr)
+			return
+		}
+
+		// Anything else is worth asking again. At boot netifd brings the
+		// interface up before the WAN has a route, so the first fetch fails for
+		// want of a network rather than for want of credentials, and giving up
+		// there left the tunnel down until somebody restarted it by hand.
+		log.Printf("[GROUP #%d] Credentials error (attempt %d): %v", groupID, attempt, err)
+		select {
+		case <-time.After(time.Duration(5+rand.Intn(11)) * time.Second):
+		case <-ctx.Done():
+			return
+		}
 	}
 
-	log.Printf("[ГРУППА #%d] Креды OK, TURN: %v, %d воркеров", groupID, creds.TurnURLs, len(workerIDs))
+	log.Printf("[GROUP #%d] Credentials OK, TURN: %v, %d workers", groupID, creds.TurnURLs, len(workerIDs))
 
 	var configRequestInFlight int32
 	var wg sync.WaitGroup
@@ -93,7 +139,7 @@ func WorkerGroup(
 		now := time.Now().Unix()
 		last := lastCredRefresh.Load()
 		if last > 0 && now-last < 15 {
-			log.Printf("[TURN] Креды уже обновлялись %d сек назад, ждём следующий retry (%s)", now-last, reason)
+			log.Printf("[TURN] Credentials were already refreshed %d s ago, waiting for the next retry (%s)", now-last, reason)
 			return true
 		}
 
@@ -103,7 +149,7 @@ func WorkerGroup(
 		}
 		u, p, urls, refreshErr := GetCreds(ctx, hash, credStreamID)
 		if refreshErr != nil {
-			log.Printf("[TURN] Не удалось обновить креды после %s: %v", reason, refreshErr)
+			log.Printf("[TURN] Could not refresh credentials after %s: %v", reason, refreshErr)
 			return false
 		}
 
@@ -111,35 +157,36 @@ func WorkerGroup(
 		creds = &Credentials{User: u, Pass: p, TurnURLs: urls, CacheStreamID: credStreamID}
 		credsMu.Unlock()
 		lastCredRefresh.Store(time.Now().Unix())
-		log.Printf("[TURN] Креды обновлены после %s, TURN urls=%d", reason, len(urls))
+		log.Printf("[TURN] Credentials refreshed after %s, TURN urls=%d", reason, len(urls))
 		return true
 	}
 
-	// Сигнализируем следующей группе, что мы успешно запустились (креды получены + фора)
+	// Signal the next group that we started successfully (credentials in hand + a head start)
 	if signalReady != nil {
 		go func() {
 			delayMs := 1000 + rand.Intn(500)
 			time.Sleep(time.Duration(delayMs) * time.Millisecond)
-			close(signalReady)
-			log.Printf("[ГРУППА #%d] Успешный старт! Передача эстафеты следующей группе...", groupID)
+			if handOver() {
+				log.Printf("[GROUP #%d] Started successfully! Handing the baton to the next group...", groupID)
+			}
 		}()
 	}
 
-	// Общий rate-limit на TURN Allocate по всей группе: не более одной новой
-	// аллокации за тик, независимо от того, сколько воркеров сейчас готовы
-	// её выполнить (стартовый stagger — отдельная вещь, см. workerDelay ниже —
-	// он размазывает старт горутин, но не сами ретраи Allocate внутри уже
-	// запущенных). Без этого на нестабильной сети несколько воркеров всё
-	// равно накладываются друг на друга и вместе выжигают VK-квоту (error
-	// 486) быстрее, чем должны. См. RunSession(allocateGate) в session.go и
-	// комментарий там про free-turn-proxy — тот же приём.
+	// A group-wide rate limit on TURN Allocate: no more than one new
+	// allocation per tick, no matter how many workers are ready to make one
+	// (the start stagger is a separate thing, see workerDelay below - it
+	// spreads out the start of the goroutines, but not the Allocate retries
+	// inside ones already running). Without this, on an unstable network
+	// several workers still overlap and together burn through the VK quota
+	// (error 486) faster than they should. See RunSession(allocateGate) in
+	// session.go and the comment there about free-turn-proxy - the same trick.
 	allocateTicker := time.NewTicker(allocateGateInterval)
 	defer allocateTicker.Stop()
 
 	for i, wid := range workerIDs {
 		wg.Add(1)
 
-		// Stagger: 200мс между воркерами
+		// Stagger: 200ms between workers
 		workerDelay := time.Duration(i) * 200 * time.Millisecond
 
 		go func(wid int, delay time.Duration) {
@@ -175,6 +222,10 @@ func WorkerGroup(
 				credsSnapshot.TurnURLs = cloneStringSlice(creds.TurnURLs)
 				credsMu.RUnlock()
 
+				// Captured before the session so the stale-binding branch below
+				// can tell an uplink that moved from a firewall that refused a
+				// source address which did not.
+				srcBefore := currentSource(peer.String())
 				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
 					getConf, cc, wid, &credsSnapshot, deviceID, password, stats, allocateTicker.C)
 
@@ -187,6 +238,37 @@ func WorkerGroup(
 					}
 				}
 
+				// Reconnect at once rather than after the 5-15s backoff below,
+				// but only when the uplink actually moved: the failure is then
+				// local and waiting only extends the outage. A send that fails
+				// while the source address stays put is not a move but a
+				// standing refusal - a firewall EPERM, which repeats for as long
+				// as the rule stands - so that case backs off instead. Without
+				// it every worker settles in ~12s and re-allocates a TURN slot,
+				// which burns the VK quota (error 486) on a condition that will
+				// not clear on its own.
+				if isStaleBindingError(sessErr) {
+					log.Printf("[WORKER #%d] Source address unusable (%v), checking the uplink", wid, sessErr)
+					waitUplinkSettled(ctx, peer.String(), wid)
+					srcAfter := currentSource(peer.String())
+					// Every worker waits on the same address and so returns at
+					// the same instant. Ungated, all nine Allocate together and
+					// VK refuses the lot (error 486).
+					if !acquireRotation(ctx) {
+						return
+					}
+					time.AfterFunc(rotationSpacing, func() { <-rotationGate })
+					if srcAfter == "" || srcAfter == srcBefore {
+						log.Printf("[WORKER #%d] The source address did not change; backing off before retrying", wid)
+						select {
+						case <-time.After(time.Duration(30+rand.Intn(31)) * time.Second):
+						case <-ctx.Done():
+							return
+						}
+					}
+					continue
+				}
+
 				if sessErr != nil {
 					if ctx.Err() != nil {
 						return
@@ -196,7 +278,11 @@ func WorkerGroup(
 
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
-					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+					// The wrapper the session adds, which it now adds only
+					// on the relay's own code - see isQuotaRefusal. The bare
+					// 486 is not matched here either: it is three digits an
+					// ephemeral port can contain.
+					isTurnQuota := strings.Contains(errStrLower, "quota")
 					quotaRetry = isTurnQuota
 					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
 						strings.Contains(errStrLower, "turn allocate auth") ||
@@ -211,35 +297,48 @@ func WorkerGroup(
 						strings.Contains(errStrLower, "flood control") ||
 						strings.Contains(errStrLower, "ip mismatch") ||
 						strings.Contains(errStrLower, "error 29") {
-						errStr += " (ошибка со стороны ВК)"
+						errStr += " (VK-side error)"
 					}
 
+					// Stays Russian: nothing in this repo produces this text, it
+					// arrives from the server, so translating it here would
+					// silently stop dead-hash detection.
 					if strings.Contains(errStr, "хеш мёртв") ||
 						strings.Contains(errStr, "FATAL_AUTH") {
-						log.Printf("[ВОРКЕР #%d] Фатальная ошибка: %s", wid, errStr)
+						log.Printf("[WORKER #%d] Fatal error: %s", wid, errStr)
+						notifyNetifdError(errStr)
 						return
 					}
 
 					attempt++
 					if isTurnQuota {
-						log.Printf("[ВОРКЕР #%d] [TURN] Квота relay исчерпана (один аккаунт VK = мало слотов), ждём: %s", wid, errStr)
+						log.Printf("[WORKER #%d] [TURN] Relay quota exhausted (one VK account = few slots), waiting: %s", wid, errStr)
 					} else if turnAllocAttrMissing {
-						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+						log.Printf("[WORKER #%d] [TURN] Allocate returned an incomplete response, refreshing TURN credentials and retrying (attempt %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN Allocate attribute-not-found")
 					} else if turnCredRefreshNeeded {
-						log.Printf("[ВОРКЕР #%d] [TURN] Ошибка allocation/кредов, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
+						log.Printf("[WORKER #%d] [TURN] Allocation/credentials error, refreshing TURN credentials and retrying (attempt %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN allocation error")
 					} else {
-						log.Printf("[ВОРКЕР #%d] Ошибка (попытка %d): %s", wid, attempt, errStr)
+						log.Printf("[WORKER #%d] Error (attempt %d): %s", wid, attempt, errStr)
 					}
 
-					// Если ошибка STUN (credentials invalid), воркер не сможет переподключиться. Завершаем.
-					isStunDeath := strings.Contains(errStrLower, "error 29") ||
-						strings.Contains(errStrLower, "cannot create socket")
-
-					if isStunDeath {
-						log.Printf("[ВОРКЕР #%d] Невосстановимая TURN/STUN ошибка, завершение: %s", wid, errStr)
-						return
+					// Neither of these is permanent, and both were treated as if
+					// they were: error 29 is VK's rate limit, and "cannot create
+					// socket" is this router having no address to bind to for a
+					// moment, which is exactly what an uplink change looks like
+					// from here. A worker that returned never came back - nothing
+					// rebuilds one, and the client exits only once every worker in
+					// every group has gone - so the tunnel ran on fewer sessions
+					// for as long as it ran, with the count on the status page the
+					// only sign of it.
+					//
+					// Waited out on the quota footing rather than the ordinary
+					// one, because asking a rate limit again in five seconds is
+					// how it stays a rate limit.
+					if strings.Contains(errStrLower, "error 29") ||
+						strings.Contains(errStrLower, "cannot create socket") {
+						quotaRetry = true
 					}
 				}
 
@@ -261,10 +360,10 @@ func WorkerGroup(
 	}
 
 	wg.Wait()
-	log.Printf("[ГРУППА #%d] Все воркеры группы завершились.", groupID)
+	log.Printf("[GROUP #%d] All workers in the group have finished.", groupID)
 }
 
-// ParseHashes — парсит строку хешей
+// ParseHashes parses a comma-separated string of hashes
 func ParseHashes(raw string) []string {
 	var result []string
 	seen := make(map[string]struct{})
@@ -302,33 +401,31 @@ func normalizeVKJoinHash(input string) string {
 	return strings.Trim(strings.TrimSpace(s), "/")
 }
 
-// TurnParams — конфигурация TURN
+// TurnParams is the TURN configuration
 type TurnParams struct {
-	Host    string
-	Port    string
-	Hashes  []string
-	WrapKey []byte // Password-derived WRAP key (32 bytes), nil = disabled
-	ObfsMode string // "audio" or "video" — RTP masking mode
-	// NoDTLS: пропустить DTLS и идти RTP-obfs AEAD напрямую поверх TURN relay.
-	// Требует сервер, который умеет принимать прямые (без DTLS) сессии на
-	// отдельном порту/слушателе — см. server.go -listen-direct.
+	Host     string
+	Port     string
+	Hashes   []string
+	WrapAEAD cipher.AEAD // Derived from the connection password, nil = disabled
+	ObfsMode string      // "audio" or "video" - RTP masking mode
+	// NoDTLS: skip DTLS and run RTP-obfs AEAD directly over the TURN relay.
+	// Requires a server that can accept direct (DTLS-less) sessions on a
+	// separate port/listener - see server.go -listen-direct.
 	NoDTLS bool
-	// RawMode: raw-IP без WireGuard (см. server.go -listen-raw, handleConnRaw).
-	// Подразумевает NoDTLS — сервер на -listen-raw DTLS не понимает.
+	// RawMode: raw-IP without WireGuard (see server.go -listen-raw, handleConnRaw).
+	// Implies NoDTLS - the server on -listen-raw does not speak DTLS.
 	RawMode bool
-	// TCPTransport: соединяться с TURN-relay по TCP вместо UDP (см.
-	// dialTURNConn в session.go). На некоторых сетях (замечено на
-	// Ростелекоме) UDP до TURN душится/дропается провайдером агрессивнее,
-	// чем TCP на тот же relay — этот флаг обходит именно это.
+	// TCPTransport: connect to the TURN relay over TCP instead of UDP (see
+	// dialTURNConn in session.go). On some networks (seen on Rostelecom)
+	// UDP to TURN is throttled/dropped by the ISP more aggressively than
+	// TCP to the same relay - this flag works around exactly that.
 	TCPTransport bool
 }
 
-// Credentials — учетные данные TURN
+// Credentials holds the TURN credentials
 type Credentials struct {
 	User          string
 	Pass          string
 	TurnURLs      []string
 	CacheStreamID int
 }
-
-

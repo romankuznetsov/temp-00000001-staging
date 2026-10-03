@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// What netifd does not know about a running tunnel. Addresses, uptime and byte
+// totals come off the interface for free now that it owns them; what it cannot
+// tell anyone is where those totals stood when the tunnel last came up, how
+// the client's sessions are doing - how many are carrying traffic, how many
+// have had to be rebuilt, how long there has been an unbroken one - which VK
+// relays they are carrying it over, and how often VK has put a captcha in the
+// way.
+//
+// All of it is files under /var/run/qwdtt, written by the pieces that know:
+// /lib/netifd/qwdtt-up.sh records the counters at the moment it reports the
+// interface up, and the client rewrites the worker count and the relay list
+// whenever a session arrives or leaves. tmpfs, so they last exactly as long as
+// the tunnel device does.
+
+'use strict';
+
+import { lsdir, open } from 'fs';
+
+const RUNDIR = '/var/run/qwdtt';
+
+function numbers(path, want) {
+	const fd = open(path, 'r');
+	if (!fd)
+		return null;
+
+	const fields = split(trim(fd.read('line') ?? ''), ' ');
+	fd.close();
+
+	if (length(fields) != want)
+		return null;
+
+	return map(fields, (v) => +v);
+}
+
+function words(path) {
+	const fd = open(path, 'r');
+	if (!fd)
+		return [];
+
+	const line = trim(fd.read('line') ?? '');
+	fd.close();
+
+	return length(line) ? split(line, ' ') : [];
+}
+
+// Which tunnels have left anything here, found by stripping a known suffix
+// rather than by looking for one file in particular.
+//
+// That file used to be .counters, and it is the one file a tunnel need not
+// write: it is the byte totals of the device at the moment the interface came
+// up, recorded by the up-script, and a wireguard-mode tunnel runs no
+// up-script and has no device whose totals would mean anything. Keying the
+// scan on it hid such a tunnel from the page completely - no workers, no
+// relays, no session clock, an empty answer for a tunnel that was carrying
+// traffic.
+const RUNFILE = /^(.+)\.(counters|workers|relays|captcha|traffic|wg)$/;
+
+const methods = {
+	getRuntime: {
+		call: function() {
+			const out = {};
+			const seen = {};
+
+			for (let entry in (lsdir(RUNDIR) ?? [])) {
+				const parts = match(entry, RUNFILE);
+				if (parts)
+					seen[parts[1]] = true;
+			}
+
+			for (let name in keys(seen)) {
+				const base = numbers(`${RUNDIR}/${name}.counters`, 4);
+				const workers = numbers(`${RUNDIR}/${name}.workers`, 4);
+				const relays = words(`${RUNDIR}/${name}.relays`);
+				const captcha = numbers(`${RUNDIR}/${name}.captcha`, 2);
+				const traffic = numbers(`${RUNDIR}/${name}.traffic`, 2);
+
+				out[name] = {
+					rx_bytes: base ? base[0] : null,
+					rx_packets: base ? base[1] : null,
+					tx_bytes: base ? base[2] : null,
+					tx_packets: base ? base[3] : null,
+					workers_active: workers ? workers[0] : null,
+					workers_total: workers ? workers[1] : null,
+					reconnects: workers ? workers[2] : null,
+					// Resolved against the router's clock rather than handed
+					// over raw: the browser's may be anywhere.
+					connected_for: (workers && workers[3]) ? time() - workers[3] : null,
+					relays: relays,
+					// Absent until VK asks for the first one, which is not the
+					// same as none having been asked for: the file is written
+					// when the first captcha arrives.
+					captcha_solved: captcha ? captcha[0] : null,
+					captcha_faced: captcha ? captcha[1] : null,
+					// Seconds since the far end last delivered a byte. Null
+					// while the client has not looked yet, and -1 for a tunnel
+					// that has received nothing at all since it came up, which
+					// is not the same as one that received something a while
+					// ago.
+					idle_for: traffic ? (traffic[0] ? time() - traffic[0] : -1) : null
+				};
+			}
+
+			return out;
+		}
+	}
+};
+
+return { 'luci.qwdtt': methods };
