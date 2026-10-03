@@ -1,10 +1,9 @@
 // Exercises the routing options in protocol/qwdtt.js away from a browser.
 //
-// These two flags write ordinary sections of /etc/config/network that the
+// The LAN-route flag writes an ordinary section of /etc/config/network that the
 // operator is then invited to edit on Network -> Routing, and every way that
-// can go wrong is silent: a rule re-broadened on the next save still routes,
-// a kill switch removed along with the rule still leaves the tunnel up, and
-// both read back as if nothing happened. The interface editor cannot be opened
+// can go wrong is silent: a rule re-broadened on the next save still routes and
+// reads back as if nothing happened. The interface editor cannot be opened
 // here, so LuCI's wrapper is reproduced instead - it wraps each resource in a
 // function and injects its requires - and the uci store is read back after.
 //
@@ -118,23 +117,18 @@ function check(what, got, want) {
 
 	check('a new tunnel is seeded with a table',
 		uci.get('network', 'qwdtt0', 'ip4table'), '51820');
-	check('a new tunnel starts with a kill switch',
-		uci.get('network', 'qwdtt0_killswitch', 'type'), 'unreachable');
-	check('and the kill switch flag reads back on',
-		opts._killswitch.cfgvalue('qwdtt0'), '1');
 	check('a new tunnel starts carrying the lan',
 		[ uci.get('network', 'qwdtt0_rule', 'in'),
 		  uci.get('network', 'qwdtt0_rule', 'lookup') ], [ 'lan', '51820' ]);
 	check('and the lan flag reads back on',
 		opts._lanroute.cfgvalue('qwdtt0'), '1');
-	check('both point at the table the tunnel was seeded with',
-		uci.get('network', 'qwdtt0_killswitch', 'table'), '51820');
+	check('the rule points at the table the tunnel was seeded with',
+		uci.get('network', 'qwdtt0_rule', 'lookup'), '51820');
 
-	// The two of them write sections of their own rather than a value, and the
-	// kill switch's description is written against the rule above it, so they
-	// belong together and at the end rather than among the plain settings.
-	check('the routing flags come last on the tab, in that order',
-		Object.keys(opts).slice(-2), [ '_lanroute', '_killswitch' ]);
+	// It writes a section of its own rather than a value, so it goes last
+	// rather than among the plain settings.
+	check('the lan-route flag comes last on the tab',
+		Object.keys(opts).slice(-1), [ '_lanroute' ]);
 
 	check('the two pacing limits are adjacent, download first',
 		Object.keys(opts).filter(k => k == 'rate_up' || k == 'rate_down'),
@@ -148,13 +142,10 @@ function check(what, got, want) {
 	uci.set('network', 'qwdtt0', 'proto', 'qwdtt');
 	load(uci, { defaultroute: '1', ip4table: null });
 
-	// Left behind, the kill switch is the only route remaining in a table the
-	// rule still looks up, so everything the rule matches is refused - by a
-	// tunnel that is no longer there to explain it.
+	// Left behind, the rule looks up a table this tunnel no longer fills.
 	lastProto.deleteConfiguration.call({ sid: 'qwdtt0' });
-	check('deleting a tunnel removes its rule and its kill switch',
-		[ uci.get('network', 'qwdtt0_rule'),
-		  uci.get('network', 'qwdtt0_killswitch') ], [ null, null ]);
+	check('deleting a tunnel removes its rule',
+		uci.get('network', 'qwdtt0_rule'), null);
 }
 
 // --- the rule's priority stays clear of netifd's ---------------------------
@@ -206,7 +197,7 @@ function check(what, got, want) {
 		uci.get('network', 'qwdtt0_rule', 'lookup'), '51999');
 }
 
-// --- the two flags are independent -----------------------------------------
+// --- turning the rule off removes its section -------------------------------
 {
 	const uci = makeUci();
 	uci.add('network', 'interface', 'qwdtt0');
@@ -214,18 +205,11 @@ function check(what, got, want) {
 	const opts = load(uci, { defaultroute: '1', ip4table: '51820' });
 
 	opts._lanroute.write('qwdtt0', '1');
-	opts._killswitch.write('qwdtt0', '1');
+	check('turning it on writes the rule',
+		uci.get('network', 'qwdtt0_rule', 'in'), 'lan');
 	opts._lanroute.write('qwdtt0', '0');
-	check('turning the rule off leaves the kill switch',
-		[ uci.get('network', 'qwdtt0_rule'),
-		  uci.get('network', 'qwdtt0_killswitch', 'type') ],
-		[ null, 'unreachable' ]);
-
-	opts._lanroute.write('qwdtt0', '1');
-	opts._killswitch.write('qwdtt0', '0');
-	check('and dropping the kill switch leaves the rule',
-		[ uci.get('network', 'qwdtt0_killswitch'),
-		  uci.get('network', 'qwdtt0_rule', 'in') ], [ null, 'lan' ]);
+	check('turning it off removes the rule',
+		uci.get('network', 'qwdtt0_rule'), null);
 }
 
 // --- the guard against the one broken combination --------------------------
@@ -451,11 +435,10 @@ function check(what, got, want) {
 
 // --- opening a WireGuard tunnel does not give it routing ------------------
 // A wireguard-mode tunnel made over uci has no ip4table, because the handler
-// asks for one only in rawtun mode. Seeding on sight staged a table, a lan
-// rule and a kill switch for it; the two flags depend on rawtun so they sit
-// inactive and do not take them away, and the mode write handler only runs
-// when the mode changes. Saving then pointed the lan at a table whose one
-// route refuses everything.
+// asks for one only in rawtun mode. Seeding on sight staged a table and a lan
+// rule for it; the flag depends on rawtun so it sits inactive and does not
+// take the rule away, and the mode write handler only runs when the mode
+// changes. Saving then pointed the lan at a table that routes nowhere.
 {
 	const uci = makeUci();
 	uci.add('network', 'interface', 'qwdtt0');
@@ -464,10 +447,8 @@ function check(what, got, want) {
 
 	load(uci, { defaultroute: '1', ip4table: null });
 
-	check('opening a wireguard tunnel seeds no rule and no kill switch',
-		[ uci.get('network', 'qwdtt0_rule'),
-		  uci.get('network', 'qwdtt0_killswitch') ],
-		[ null, null ]);
+	check('opening a wireguard tunnel seeds no rule',
+		uci.get('network', 'qwdtt0_rule'), null);
 	// The table is seeded even so: inert for a tunnel that routes nothing,
 	// and wanted the moment the mode changes, where nothing else would add
 	// it in time - an ip4table widget that renders empty is parsed away.
@@ -491,28 +472,23 @@ function check(what, got, want) {
 }
 
 // --- a WireGuard tunnel writes no routing ----------------------------------
-// It adds no route of its own, so a rule steering the lan at its table finds
-// nothing there - and with the kill switch, that table's only route refuses
-// everything. The lan would be black-holed by a tunnel that is working, which
-// is the same failure the uninstall sweep exists for. The two flags go
-// inactive on the tab, and an inactive option is not removed unless it has
-// rmempty, which these clear; the mode field takes them instead.
+// It adds no route of its own, so a rule steering the lan at its table would
+// find nothing there. The flag goes inactive on the tab, and an inactive
+// option is not removed unless it has rmempty, which it clears; the mode field
+// takes it instead.
 {
 	const uci = makeUci();
 	uci.add('network', 'interface', 'qwdtt0');
 	uci.set('network', 'qwdtt0', 'proto', 'qwdtt');
 
-	// created as a RAW-IP tunnel, so both sections exist to begin with
+	// created as a RAW-IP tunnel, so the rule exists to begin with
 	const opts = load(uci, { defaultroute: '1', ip4table: null });
 	check('the tunnel starts with routing to lose',
-		[ uci.get('network', 'qwdtt0_rule', 'in'),
-		  uci.get('network', 'qwdtt0_killswitch', 'type') ],
-		[ 'lan', 'unreachable' ]);
+		uci.get('network', 'qwdtt0_rule', 'in'), 'lan');
 
 	opts.mode.write('qwdtt0', 'wireguard');
-	check('switching to wireguard takes the rule and the kill switch with it',
-		[ uci.get('network', 'qwdtt0_rule'),
-		  uci.get('network', 'qwdtt0_killswitch') ], [ null, null ]);
+	check('switching to wireguard takes the rule with it',
+		uci.get('network', 'qwdtt0_rule'), null);
 
 	// and the other way round leaves what is there alone
 	const back = makeUci();
@@ -520,10 +496,8 @@ function check(what, got, want) {
 	back.set('network', 'qwdtt0', 'proto', 'qwdtt');
 	const again = load(back, { defaultroute: '1', ip4table: null });
 	again.mode.write('qwdtt0', 'rawtun');
-	check('staying on rawtun keeps them',
-		[ back.get('network', 'qwdtt0_rule', 'in'),
-		  back.get('network', 'qwdtt0_killswitch', 'type') ],
-		[ 'lan', 'unreachable' ]);
+	check('staying on rawtun keeps it',
+		back.get('network', 'qwdtt0_rule', 'in'), 'lan');
 }
 
 // --- the messages the interface page shows ---------------------------------

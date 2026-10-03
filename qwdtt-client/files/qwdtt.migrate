@@ -5,14 +5,10 @@
 #
 # The client's own policy routing has no direct counterpart and is rebuilt out
 # of standard sections: route_table becomes the interface's ip4table,
-# rule_priority and fwmark become the `config rule` that looks that table up,
-# and the kill switch - traffic held rather than released to the WAN while the
-# tunnel is down - becomes an unreachable default route in the same table, at a
-# metric the tunnel's own route beats. Anything that does not map is logged by
-# name rather than dropped quietly.
+# rule_priority and fwmark become the `config rule` that looks that table up.
+# Anything that does not map is logged by name rather than dropped quietly.
 
 OLD=${QWDTT_CONFIG:-/etc/config/qwdtt}
-KILL_METRIC=1000000
 
 [ -f "$OLD" ] || exit 0
 
@@ -80,10 +76,10 @@ for sec in $(uci -q show qwdtt | sed -n "s/^qwdtt\.\([^.=]*\)=qwdtt$/\1/p"); do
 	# br-lan belongs to in a stock configuration; a router that arranged its
 	# LAN differently has to correct this, which is why the old value is
 	# logged rather than guessed at.
-	# Only for a tunnel that runs: written for one that does not, the rule
-	# sends the LAN at a table holding nothing but the unreachable default.
+	# Only for a tunnel that runs: a disabled one will not route, so it gets no
+	# rule pointing the LAN at a table it never fills.
 	if [ "$enabled" != 1 ]; then
-		say "qwdtt.$sec is disabled: network.$sec carries no rule and no kill switch, tick both on the qWDTT tab when you enable it"
+		say "qwdtt.$sec is disabled: network.$sec carries no rule, tick 'Route LAN client traffic through this tunnel' on the qWDTT tab when you enable it"
 	else
 
 	uci -q set "network.${sec}_rule=rule"
@@ -94,15 +90,6 @@ for sec in $(uci -q show qwdtt | sed -n "s/^qwdtt\.\([^.=]*\)=qwdtt$/\1/p"); do
 	else
 		uci -q set "network.${sec}_rule.in=lan"
 	fi
-
-	# Attached to loopback so that it outlives the tunnel: a route attached to
-	# the tunnel itself would disappear exactly when it is needed.
-	uci -q set "network.${sec}_killswitch=route"
-	uci -q set "network.${sec}_killswitch.interface=loopback"
-	uci -q set "network.${sec}_killswitch.target=0.0.0.0/0"
-	uci -q set "network.${sec}_killswitch.type=unreachable"
-	uci -q set "network.${sec}_killswitch.table=$table"
-	uci -q set "network.${sec}_killswitch.metric=$KILL_METRIC"
 
 	fi
 
