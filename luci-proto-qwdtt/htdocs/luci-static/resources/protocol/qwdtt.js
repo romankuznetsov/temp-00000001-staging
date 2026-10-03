@@ -439,7 +439,7 @@ return network.registerProtocol('qwdtt', {
 		o.rmempty = false;
 
 		o = s.taboption('qwdtt', form.DynamicList, 'hash', _('Hashes'),
-			_('A %d-character hash or a VK call link, added with the button below. At least one is required.').format(HASH_LEN));
+			_('A %d-character hash or a VK call link. At least one is required.').format(HASH_LEN));
 
 		/* DynamicList passes `optional: this.optional || this.rmempty` to its
 		   widget, so clearing rmempty is what routes an empty list through
@@ -488,15 +488,12 @@ return network.registerProtocol('qwdtt', {
 			/* An id because a form field without one is flagged by every
 			   accessibility check, and its own rather than the widget's:
 			   getUIElement resolves the list by "widget." + cbid, and a second
-			   element answering to that would be found instead of the list.
-
-			   No width of its own either. The theme gives every input 210px,
-			   which is what the fields above this one are, and anything set
-			   here would leave this one the odd width on the tab. */
+			   element answering to that would be found instead of the list. */
 			var field = E('input', {
 				'id': 'qwdtt.%s.addhash'.format(section_id),
 				'type': 'text',
 				'class': 'cbi-input-text',
+				'style': 'flex:1 1 auto',
 				'aria-label': _('Hash or VK call link'),
 				'placeholder': _('Hash or VK call link')
 			});
@@ -543,18 +540,17 @@ return network.registerProtocol('qwdtt', {
 
 			field.addEventListener('input', accept);
 
-			/* Inline rather than a flex row: both are inline-block already, so
-			   they line up beside each other on their own, and the input keeps
-			   the width the theme gave it instead of being stretched to fill. */
-			return E('div', {}, [
+			/* A column as wide as the list, which 43-character hashes stretch
+			   past the theme's 210px, so the field below fills the same width. */
+			return E('div', { 'style': 'display:inline-flex;flex-direction:column;max-width:100%' }, [
 				node,
-				E('div', { 'style': 'margin-top:.5em' }, [
+				E('div', { 'style': 'display:flex;margin-top:.5em' }, [
 					field,
-					' ',
 					E('button', {
 						'class': 'cbi-button cbi-button-add',
+						'style': 'margin-left:4px',
 						'click': function(ev) { ev.preventDefault(); add(); }
-					}, [ _('Add hash') ])
+					}, [ '+' ])
 				]),
 				problem
 			]);

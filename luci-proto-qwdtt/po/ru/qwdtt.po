@@ -62,14 +62,11 @@ msgstr "Пароль подключения, заданный на сервер�
 msgid "Hashes"
 msgstr "Хеши"
 
-msgid "A %d-character hash or a VK call link, added with the button below. At least one is required."
-msgstr "Хеш из %d символов или ссылка на звонок VK, добавляются кнопкой ниже. Нужен хотя бы один."
+msgid "A %d-character hash or a VK call link. At least one is required."
+msgstr "Хеш из %d символов или ссылка на звонок VK. Нужен хотя бы один."
 
 msgid "Hash or VK call link"
 msgstr "Хеш или ссылка на звонок VK"
-
-msgid "Add hash"
-msgstr "Добавить хеш"
 
 msgid "This hash is already in the list."
 msgstr "Этот хеш уже есть в списке."
