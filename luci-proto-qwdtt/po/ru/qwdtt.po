@@ -68,9 +68,6 @@ msgstr "Хеш из %d символов или ссылка на звонок VK
 msgid "Hash or VK call link"
 msgstr "Хеш или ссылка на звонок VK"
 
-msgid "This hash is already in the list."
-msgstr "Этот хеш уже есть в списке."
-
 msgid "Device ID"
 msgstr "Идентификатор устройства"
 

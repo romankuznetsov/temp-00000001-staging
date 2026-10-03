@@ -464,96 +464,19 @@ return network.registerProtocol('qwdtt', {
 				parseHashes(list));
 		};
 
-		/* The stock widget for what is already in the list, and a field of our
-		   own to put things into it. Delegating to the parent keeps the
-		   standard remove and reorder controls, and the field goes in a wrapper
-		   rather than inside the dynlist node, whose children are its items.
-		   Wrapping is safe for getUIElement, which resolves the widget by
-		   element id. */
+		o.placeholder = _('Hash or VK call link');
+
+		/* The stock widget, but a pasted link goes into the list as the hash it
+		   denotes rather than waiting for the save to be reduced. */
 		o.renderWidget = function(section_id, option_index, cfgvalue) {
-			var self = this;
 			var node = form.DynamicList.prototype.renderWidget.apply(this, arguments);
+			var widget = L.dom.findClassInstance(node);
+			var addItem = widget.addItem;
 
-			/* ui.DynamicList ends with a row of its own for adding items, and
-			   this field is not free-form: a link has to be reduced to the hash
-			   it denotes before it can go in the list, and anything that is
-			   neither has to be refused. That row is hidden rather than taken
-			   out, because addItem() finds it with querySelector to insert
-			   before and dereferences the result without checking - removing it
-			   throws on the next setValue(). */
-			var addRow = node.querySelector('.add-item');
-			if (addRow)
-				addRow.style.display = 'none';
-
-			/* An id because a form field without one is flagged by every
-			   accessibility check, and its own rather than the widget's:
-			   getUIElement resolves the list by "widget." + cbid, and a second
-			   element answering to that would be found instead of the list. */
-			var field = E('input', {
-				'id': 'qwdtt.%s.addhash'.format(section_id),
-				'type': 'text',
-				'class': 'cbi-input-text',
-				'style': 'flex:1 1 auto',
-				'aria-label': _('Hash or VK call link'),
-				'placeholder': _('Hash or VK call link')
-			});
-
-			var problem = E('div', {
-				'class': 'cbi-value-description',
-				'style': 'display:none'
-			});
-
-			function complain(text) {
-				problem.textContent = text;
-				problem.style.display = '';
-				field.classList.add('cbi-input-invalid');
-			}
-
-			function accept() {
-				problem.style.display = 'none';
-				field.classList.remove('cbi-input-invalid');
-			}
-
-			/* Staged, not saved: what is added has to join what the user is
-			   looking at, including edits not yet written. */
-			function add() {
-				var el = self.getUIElement(section_id);
-				var hash = normalizeVKJoinHash(field.value);
-				var trouble = hashProblem(hash);
-				var list = el ? el.getValue() : null;
-
-				if (trouble)
-					return complain(trouble);
-
-				list = (Array.isArray(list) ? list : []).filter(function(h) {
-					return h != null && h !== '';
-				});
-				if (list.indexOf(hash) !== -1)
-					return complain(_('This hash is already in the list.'));
-
-				list.push(hash);
-				if (el)
-					el.setValue(list);
-				field.value = '';
-				accept();
-			}
-
-			field.addEventListener('input', accept);
-
-			/* A column as wide as the list, which 43-character hashes stretch
-			   past the theme's 210px, so the field below fills the same width. */
-			return E('div', { 'style': 'display:inline-flex;flex-direction:column;max-width:100%' }, [
-				node,
-				E('div', { 'style': 'display:flex;margin-top:.5em' }, [
-					field,
-					E('button', {
-						'class': 'cbi-button cbi-button-add',
-						'style': 'margin-left:4px',
-						'click': function(ev) { ev.preventDefault(); add(); }
-					}, [ '+' ])
-				]),
-				problem
-			]);
+			widget.addItem = function(dl, value, text, flash) {
+				return addItem.call(this, dl, normalizeVKJoinHash(value), text, flash);
+			};
+			return node;
 		};
 
 		o = s.taboption('qwdtt', form.Value, 'workers', _('Workers'),
