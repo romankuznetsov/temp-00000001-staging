@@ -125,26 +125,6 @@ uci commit firewall
 # zone's own chains in the live ruleset, empty and unreferenced.
 [ ! -x /etc/init.d/firewall ] || /etc/init.d/firewall restart >/dev/null 2>&1
 
-# The kill switch is the one leftover that does harm rather than merely sitting
-# there. It is an unreachable default in the tunnel's own table, and with the
-# tunnel gone that table holds nothing else, so the rule steering the LAN into
-# it refuses everything - a router that loses its internet on uninstall, and
-# again on every boot after, with no qwdtt left to explain it. The rule is kept:
-# a rule whose table has no matching route falls through to the next one. So is
-# the interface, which is where the credentials are.
-#
-# Found by its shape rather than by walking the qwdtt interfaces, because one
-# whose interface has already been deleted belongs to no interface at all and
-# was the case the walk missed.
-for kill in $$(uci -q show network | \
-	sed -n "s/^network\.\([^.=]*_killswitch\)=route$$/\1/p"); do
-	[ "$$(uci -q get "network.$$kill.type")" = unreachable ] || continue
-	[ "$$(uci -q get "network.$$kill.interface")" = loopback ] || continue
-	uci -q delete "network.$$kill"
-done
-uci commit network
-[ ! -x /etc/init.d/network ] || /etc/init.d/network reload >/dev/null 2>&1
-
 exit 0
 endef
 

@@ -119,12 +119,6 @@ network.qwdtt0.peer_port=56003
 network.qwdtt0.proto=qwdtt
 network.qwdtt0.workers=18
 network.qwdtt0=interface
-network.qwdtt0_killswitch.interface=loopback
-network.qwdtt0_killswitch.metric=1000000
-network.qwdtt0_killswitch.table=51820
-network.qwdtt0_killswitch.target=0.0.0.0/0
-network.qwdtt0_killswitch.type=unreachable
-network.qwdtt0_killswitch=route
 network.qwdtt0_rule.in=lan
 network.qwdtt0_rule.lookup=51820
 network.qwdtt0_rule.priority=9999
@@ -149,10 +143,9 @@ if grep -q '^network\.qwdtt0\.dns=' "$NETWORK"; then
 	fail=1
 fi
 
-# A disabled tunnel keeps no rule and no kill switch. The old client added its
-# rule while it was running, so a disabled one had none; written anyway, the
-# rule sends traffic at a table whose only route is the unreachable default,
-# and a switched-off tunnel starts refusing packets.
+# A disabled tunnel keeps no rule. The old client added its rule only while
+# running, so a disabled one had none, and a disabled tunnel will not route
+# anyway.
 case $log in
 *'qwdtt.work is disabled'*) ;;
 *)

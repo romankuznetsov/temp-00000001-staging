@@ -172,26 +172,10 @@ function parseHashes(entries) {
    router's WAN down that way. The field for it belongs to the interface editor,
    so all this file can do is choose the number - see renderFormOptions.
 
-   What decides which traffic enters the table is an ordinary `config rule`,
-   and what stops traffic leaking to the WAN while the tunnel is down is an
-   ordinary unreachable route in the same table. Neither is a qWDTT option --
-   both are written here because every value they need is known here, and
-   both are then editable on Network -> Routing like any other.
-
-   One flag each, rather than one flag writing both: they answer different
-   questions, and a single control could neither drop the kill switch on its
-   own nor be turned off without taking a kill switch somebody wanted with
-   it. */
-
-/* The kill switch only has to lose to the tunnel's own default route, and it
-   is the only other route in the table, so the number just has to be larger
-   than any metric that route could carry. netifd gives an interface's routes
-   the interface's own metric, and at 4096 a tunnel set above that lost to its
-   own kill switch: the unreachable default won, the LAN was refused, and the
-   tunnel stayed up throughout. Confirmed on a router - metric 5000 produced
-   "default dev qwdtt0 ... metric 5000" in the tunnel's table. A million is
-   past anything an interface is given. */
-var KILL_METRIC = '1000000';
+   What decides which traffic enters the table is an ordinary `config rule`.
+   It is not a qWDTT option -- it is written here because every value it needs
+   is known here, and it is then editable on Network -> Routing like any
+   other. */
 
 function tableOf(section_id) {
 	return uci.get('network', section_id, 'ip4table') || '';
@@ -265,27 +249,6 @@ function addLanRule(section_id, table) {
 		uci.set('network', rule, 'priority', freePriority());
 	}
 	uci.set('network', rule, 'lookup', table);
-}
-
-/* Attached to loopback so that it outlives the tunnel: a route attached to the
-   tunnel itself would disappear exactly when it is needed. The metric is
-   beaten by the tunnel's own default, so it only decides what happens once
-   that one is gone. */
-function addKillswitch(section_id, table) {
-	var kill = section_id + '_killswitch';
-
-	if (uci.get('network', kill) == null) {
-		uci.add('network', 'route', kill);
-		uci.set('network', kill, 'interface', 'loopback');
-		uci.set('network', kill, 'target', '0.0.0.0/0');
-		uci.set('network', kill, 'type', 'unreachable');
-	}
-	uci.set('network', kill, 'table', table);
-	/* Re-asserted rather than written once, unlike the rest. It is not a knob:
-	   the only thing it decides is that this route loses to the tunnel's, and
-	   a kill switch written when the number was lower is one an interface
-	   metric can still outrank. */
-	uci.set('network', kill, 'metric', KILL_METRIC);
 }
 
 /* Only what is there. Removing a section that does not exist still marks the
@@ -368,14 +331,11 @@ return network.registerProtocol('qwdtt', {
 		return (network.getIfnameOf(ifname) == this.getIfname());
 	},
 
-	/* Deleting the interface has to take these two with it. They are separate
-	   sections, so nothing else removes them, and the kill switch left behind
-	   is not inert: it is the only route left in a table the rule still looks
-	   up, so whatever the rule matches is refused outright - by a tunnel that
-	   no longer exists and has nothing left to explain it. */
+	/* Deleting the interface has to take the rule with it. It is a separate
+	   section, so nothing else removes it, and a rule left behind looks up a
+	   table this tunnel no longer fills. */
 	deleteConfiguration: function() {
 		dropSection(this.sid + '_rule');
-		dropSection(this.sid + '_killswitch');
 	},
 
 	renderFormOptions: function(s) {
@@ -414,16 +374,14 @@ return network.registerProtocol('qwdtt', {
 			var seeded = freeTable();
 
 			uci.set('network', s.section, 'ip4table', seeded);
-			/* This visit is the only one at which a tunnel is known to have
-			   no routing yet, so it is where both flags start on - either is
-			   one click off. Not for a wireguard-mode tunnel, which carries
-			   nothing: a rule at its table would send the LAN at a table
-			   whose one route refuses everything. Its table is still seeded,
-			   being inert there and wanted the moment it becomes rawtun. */
-			if (uci.get('network', s.section, 'mode') != 'wireguard') {
+			/* This visit is the only one at which a tunnel is known to have no
+			   routing yet, so it is where the LAN rule starts on - one click
+			   off. Not for a wireguard-mode tunnel, which carries nothing: a
+			   rule at its table would send the LAN at a table that routes
+			   nowhere. The table is still seeded, being inert there and wanted
+			   the moment it becomes rawtun. */
+			if (uci.get('network', s.section, 'mode') != 'wireguard')
 				addLanRule(s.section, seeded);
-				addKillswitch(s.section, seeded);
-			}
 		}
 
 		/* First, because it decides what the rest of the tab means: in
@@ -435,19 +393,15 @@ return network.registerProtocol('qwdtt', {
 		o.value('wireguard', 'wireguard');
 		o.default = 'rawtun';
 
-		/* The routing below is declared with depends('mode', 'rawtun'), and
-		   going inactive is not enough to take it away: an inactive option is
-		   only removed when it has rmempty, which those two clear on purpose.
-		   So the switch does it, here, where the two sections are known to have
-		   stopped describing anything - a rule pointing at a table this tunnel
-		   no longer fills, and an unreachable route that is then the only thing
-		   in it. Declared before them, so their own write cannot put them
-		   back. */
+		/* The rule below is declared with depends('mode', 'rawtun'), and going
+		   inactive is not enough to take it away: an inactive option is only
+		   removed when it has rmempty, which it clears on purpose. So the switch
+		   does it, here, where the rule is known to have stopped describing
+		   anything - it points at a table this tunnel no longer fills. Declared
+		   before it, so its own write cannot put it back. */
 		o.write = function(section_id, value) {
-			if (value == 'wireguard') {
+			if (value == 'wireguard')
 				dropSection(section_id + '_rule');
-				dropSection(section_id + '_killswitch');
-			}
 			return form.ListValue.prototype.write.apply(this, arguments);
 		};
 
@@ -729,15 +683,11 @@ return network.registerProtocol('qwdtt', {
 		o = s.taboption('qwdtt', form.Flag, 'turn_tcp', _('TURN over TCP'),
 			withDefault(_('off'), _('Reach the TURN relay over TCP instead of UDP. Works around UDP throttling on some networks, for example Rostelecom.')));
 
-		/* Last on the tab, and the two of them together: they are the only
-		   settings here that write sections of their own rather than a value,
-		   and the kill switch is read against the rule above it. */
-		/* Both routing flags are RAW-IP only, and not merely as a tidiness: a
-		   WireGuard-mode interface adds no route of its own, so a rule steering
-		   the LAN at its table would find nothing there - and with the kill
-		   switch on, that table's only route refuses everything. The LAN would
-		   be black-holed by a tunnel that is working. Going inactive is what
-		   removes the two sections, which is also how switching an existing
+		/* Last on the tab: it is the only setting here that writes a section of
+		   its own rather than a value. RAW-IP only, and not merely as tidiness:
+		   a WireGuard-mode interface adds no route of its own, so a rule
+		   steering the LAN at its table would find nothing there. Going inactive
+		   is what removes the rule, which is also how switching an existing
 		   tunnel over takes its old routing with it. */
 		o = s.taboption('qwdtt', form.Flag, '_lanroute',
 			_('Route LAN client traffic through this tunnel'),
@@ -782,31 +732,6 @@ return network.registerProtocol('qwdtt', {
 
 		o.remove = function(section_id) {
 			dropSection(section_id + '_rule');
-		};
-
-		o = s.taboption('qwdtt', form.Flag, '_killswitch',
-			_('Do not allow traffic if the tunnel is down (kill switch).'),
-			withDefault(_('on'), _('Writes an unreachable default route into the routing table of this tunnel, so traffic sent there is refused rather than released to the WAN whenever the tunnel is not up. Independent of the rule above: it covers whatever looks up that table, including a rule written by hand.')));
-		o.rmempty = false;
-		o.forcewrite = true;
-		o.depends('mode', 'rawtun');
-
-		o.cfgvalue = function(section_id) {
-			return uci.get('network', section_id + '_killswitch') != null
-				? this.enabled : this.disabled;
-		};
-
-		o.write = function(section_id, value) {
-			if (value != this.enabled)
-				return dropSection(section_id + '_killswitch');
-
-			addKillswitch(section_id,
-				this.section.formvalue(section_id, 'ip4table') ||
-				tableOf(section_id) || freeTable());
-		};
-
-		o.remove = function(section_id) {
-			dropSection(section_id + '_killswitch');
 		};
 	}
 });
