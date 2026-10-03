@@ -200,11 +200,11 @@ msgstr "Звонок VK, которому принадлежит этот хеш
 msgid "The server did not answer: check the address, port and password"
 msgstr "Сервер не ответил: проверьте адрес, порт и пароль"
 
-msgid "Per-session upload limit"
-msgstr "Ограничение отдачи на сессию"
+msgid "Upload speed limit (per session)"
+msgstr "Ограничение скорости отдачи (на сессию)"
 
-msgid "Per-session download limit"
-msgstr "Ограничение приёма на сессию"
+msgid "Download speed limit (per session)"
+msgstr "Ограничение скорости приёма (на сессию)"
 
 msgid "Kbit/s each session may send to its VK relay."
 msgstr "Сколько Кбит/с каждая сессия может отдавать своему ретранслятору VK."

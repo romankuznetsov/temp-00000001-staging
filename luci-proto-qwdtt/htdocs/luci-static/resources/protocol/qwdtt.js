@@ -612,12 +612,12 @@ return network.registerProtocol('qwdtt', {
 		   session is what VK allocates and meters: several sessions share one
 		   relay address, so a per-address limit would describe nothing VK
 		   sees. */
-		o = s.taboption('qwdtt', form.Value, 'rate_down', _('Per-session download limit'),
+		o = s.taboption('qwdtt', form.Value, 'rate_down', _('Download speed limit (per session)'),
 			withDefault(_('none'), _('Kbit/s each session may receive from its VK relay.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 
-		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
+		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Upload speed limit (per session)'),
 			withDefault(_('none'), _('Kbit/s each session may send to its VK relay.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
