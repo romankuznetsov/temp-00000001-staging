@@ -150,16 +150,20 @@ install_via_opkg() {
 
 	msg "trust key:    $key_url"
 	mkdir -p /etc/opkg/keys
-	fetch "$key_url" /tmp/qwdtt-usign.pub ||
+	# mktemp, not a fixed /tmp name: the installer runs as root, and a
+	# predictable path a local user can pre-create lets them swap the key
+	# before usign reads it and it is moved into the trusted directory.
+	keyfile=$(mktemp) || die "could not create a temporary file for the trust key"
+	fetch "$key_url" "$keyfile" ||
 		die "could not download the trust key from $key_url"
 
 	# The file name under /etc/opkg/keys has to be the key's own id: opkg reads
 	# the signer id out of the signature and looks for a file of that name.
-	keyid=$(usign -F -p /tmp/qwdtt-usign.pub 2>/dev/null) ||
+	keyid=$(usign -F -p "$keyfile" 2>/dev/null) ||
 		die "the downloaded trust key is not a usign public key -- is the feed published?"
 	[ -n "$keyid" ] ||
 		die "the downloaded trust key is not a usign public key -- is the feed published?"
-	mv /tmp/qwdtt-usign.pub "/etc/opkg/keys/$keyid"
+	mv "$keyfile" "/etc/opkg/keys/$keyid"
 	msg "key id:       $keyid"
 
 	msg "feed:         $feed_url"
