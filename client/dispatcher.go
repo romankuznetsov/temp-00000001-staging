@@ -177,9 +177,8 @@ func (d *Dispatcher) AttachTUN(f *os.File) {
 	// The sessions that registered while there was nothing to attach them to
 	// have been reported as carrying nothing, which they were. Now they are.
 	d.mu.Lock()
-	count := len(d.workers)
+	d.reportWorkers(len(d.workers))
 	d.mu.Unlock()
-	d.reportWorkers(count)
 }
 
 // Whether there is anything to carry traffic on yet. In rawtun mode the
