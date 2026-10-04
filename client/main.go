@@ -502,7 +502,13 @@ func main() {
 	log.Println("[CLIENT] ═══════════════════════════════════════")
 
 	stats := NewStats()
-	startNetifdTrafficWatch(ctx, cancel, stats, *tunName, peer.IP)
+	// The device picks the watch's strategy, and only rawtun carries traffic on one:
+	// in vpn mode a tun_name left in the config file names a placeholder.
+	watchDevice := ""
+	if activeConnMode == "rawtun" {
+		watchDevice = *tunName
+	}
+	startNetifdTrafficWatch(ctx, cancel, stats, watchDevice, peer.IP)
 
 	var disp *Dispatcher
 	if activeConnMode == "rawtun" {
