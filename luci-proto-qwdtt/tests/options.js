@@ -71,8 +71,8 @@ function load(uci, formvalues) {
 		taboption(tab, type, name, title, desc) {
 			const o = {
 				enabled: '1', disabled: '0', section,
-				optName: name, title, description: desc,
-				value() {}, depends() {}
+				optName: name, title, description: desc, labels: {},
+				value(key, label) { this.labels[key] = label; }, depends() {}
 			};
 			opts[name] = o;
 			return o;
@@ -382,7 +382,8 @@ function check(what, got, want) {
 			continue;
 		}
 		seen++;
-		const want = `Default: ${value}.`;
+		// A dropdown names its default by the label it shows.
+		const want = `Default: ${o.labels[value] ?? value}.`;
 		if (!String(o.description || '').startsWith(want)) {
 			console.log(`${name}: hint does not open with ${JSON.stringify(want)}\n  ${o.description}`);
 			failed = 1;

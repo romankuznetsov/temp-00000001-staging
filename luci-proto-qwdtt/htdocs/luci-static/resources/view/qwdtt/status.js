@@ -374,7 +374,7 @@ function checkSection(nets) {
 
 	if (!checkable.length)
 		return E('div', { 'class': 'cbi-section' }, [
-			E('h3', {}, [ _('Check a tunnel') ]),
+			E('h3', {}, [ _('Check tunnel') ]),
 			E('div', { 'class': 'cbi-section-descr' }, [
 				_('A WireGuard-mode tunnel is checked through the WireGuard interface that uses it, and none is configured yet: add one whose peer endpoint is this tunnel local endpoint, and it will be offered here.')
 			])
@@ -527,10 +527,10 @@ function checkSection(nets) {
 			E('h3', {
 				'style': 'display:inline; font-size:inherit; ' +
 					'line-height:inherit; margin:0'
-			}, [ _('Check a tunnel') ])
+			}, [ _('Check tunnel') ])
 		]),
 		E('div', { 'class': 'cbi-section-descr' }, [
-			_('Pings an address through the tunnel itself rather than through the router, which is what tells a tunnel that is up and carrying nothing from one that works. A WireGuard-mode tunnel is asked through the WireGuard interface that uses it, named in brackets, since that is what carries the traffic. The ping is bound to the interface rather than routed to it, so it answers before anything has been routed into the tunnel at all.')
+			_('Pings an address through the tunnel. A WireGuard-mode tunnel is pinged through the WireGuard interface that uses it.')
 		]),
 		E('table', { 'class': 'table' }, [
 			E('tr', { 'class': 'tr' }, [

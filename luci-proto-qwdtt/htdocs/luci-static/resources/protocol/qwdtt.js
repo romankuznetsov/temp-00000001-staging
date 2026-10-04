@@ -388,9 +388,9 @@ return network.registerProtocol('qwdtt', {
 		   WireGuard mode this interface has no device, no address and no
 		   routes, so the routing flags below go away with it. */
 		o = s.taboption('qwdtt', form.ListValue, 'mode', _('Mode'),
-			withDefault('rawtun', _('rawtun makes this interface the tunnel: the server assigns its address and the LAN can be routed into it. wireguard makes it a transport only - the client relays a local UDP port to the WireGuard listener of the server through the VK call, and an ordinary WireGuard interface pointed at that port carries the traffic, holding the keys, the addresses and the routing.')));
-		o.value('rawtun', 'rawtun');
-		o.value('wireguard', 'wireguard');
+			_('Default: %s.').format('RAW'));
+		o.value('rawtun', 'RAW');
+		o.value('wireguard', 'WireGuard');
 		o.default = 'rawtun';
 
 		/* The rule below is declared with depends('mode', 'rawtun'), and going
@@ -417,18 +417,18 @@ return network.registerProtocol('qwdtt', {
 		   value but one per mode, and a box showing the other mode's port would
 		   be worse than a box showing none. */
 		o = s.taboption('qwdtt', form.Value, 'peer_port', _('Peer port'),
-			_('UDP port of the server listener: %s for the RAW one, %s for WireGuard. Left empty, the port the mode calls for is used.')
+			_('Server UDP port. Default: %s for rawtun, %s for wireguard.')
 				.format(PEER_PORT.rawtun, PEER_PORT.wireguard));
 		o.datatype = 'port';
 
 		o = s.taboption('qwdtt', form.Value, 'listen_port', _('Local endpoint port'),
-			withDefault(RELAY_PORT, _('UDP port on 127.0.0.1 the relay listens on. This is the endpoint a WireGuard interface is pointed at, as its peer. Each tunnel needs its own: two relays cannot share a port, and the second to start exits saying so.')));
+			withDefault(RELAY_PORT, _('UDP port on 127.0.0.1 that the WireGuard peer points at. One per tunnel.')));
 		o.datatype = 'port';
 		o.placeholder = RELAY_PORT;
 		o.depends('mode', 'wireguard');
 
 		o = s.taboption('qwdtt', form.Value, 'device_id', _('Device ID'),
-			_('Identifies this tunnel to the server, which knows it by this and nothing else. Two tunnels that share one are a single device to it and it disconnects them in turn, so each needs its own.'));
+			_('Must be unique per tunnel. If shared, the server disconnects those tunnels in turn.'));
 		o.rmempty = false;
 
 		/* ---- routing ------------------------------------------------------ */
@@ -439,7 +439,7 @@ return network.registerProtocol('qwdtt', {
 		o.rmempty = false;
 
 		o = s.taboption('qwdtt', form.DynamicList, 'hash', _('Hashes'),
-			_('Added one at a time with the button below, which takes either the %d-character hash or a whole VK call link and reduces the link to the hash it denotes. At least one is required -- the client selects a hash modulo the list length, so an empty list cannot work.').format(HASH_LEN));
+			_('A %d-character hash or a VK call link. At least one is required.').format(HASH_LEN));
 
 		/* DynamicList passes `optional: this.optional || this.rmempty` to its
 		   widget, so clearing rmempty is what routes an empty list through
@@ -464,110 +464,26 @@ return network.registerProtocol('qwdtt', {
 				parseHashes(list));
 		};
 
-		/* The stock widget for what is already in the list, and a field of our
-		   own to put things into it. Delegating to the parent keeps the
-		   standard remove and reorder controls, and the field goes in a wrapper
-		   rather than inside the dynlist node, whose children are its items.
-		   Wrapping is safe for getUIElement, which resolves the widget by
-		   element id. */
+		o.placeholder = _('Hash or VK call link');
+
+		/* The stock widget, but a pasted link goes into the list as the hash it
+		   denotes rather than waiting for the save to be reduced. */
 		o.renderWidget = function(section_id, option_index, cfgvalue) {
-			var self = this;
 			var node = form.DynamicList.prototype.renderWidget.apply(this, arguments);
+			var widget = L.dom.findClassInstance(node);
+			var addItem = widget.addItem;
 
-			/* ui.DynamicList ends with a row of its own for adding items, and
-			   this field is not free-form: a link has to be reduced to the hash
-			   it denotes before it can go in the list, and anything that is
-			   neither has to be refused. That row is hidden rather than taken
-			   out, because addItem() finds it with querySelector to insert
-			   before and dereferences the result without checking - removing it
-			   throws on the next setValue(). */
-			var addRow = node.querySelector('.add-item');
-			if (addRow)
-				addRow.style.display = 'none';
-
-			/* An id because a form field without one is flagged by every
-			   accessibility check, and its own rather than the widget's:
-			   getUIElement resolves the list by "widget." + cbid, and a second
-			   element answering to that would be found instead of the list.
-
-			   No width of its own either. The theme gives every input 210px,
-			   which is what the fields above this one are, and anything set
-			   here would leave this one the odd width on the tab. */
-			var field = E('input', {
-				'id': 'qwdtt.%s.addhash'.format(section_id),
-				'type': 'text',
-				'class': 'cbi-input-text',
-				'aria-label': _('Hash or VK call link'),
-				'placeholder': _('Hash or VK call link')
-			});
-
-			var problem = E('div', {
-				'class': 'cbi-value-description',
-				'style': 'display:none'
-			});
-
-			function complain(text) {
-				problem.textContent = text;
-				problem.style.display = '';
-				field.classList.add('cbi-input-invalid');
-			}
-
-			function accept() {
-				problem.style.display = 'none';
-				field.classList.remove('cbi-input-invalid');
-			}
-
-			/* Staged, not saved: what is added has to join what the user is
-			   looking at, including edits not yet written. */
-			function add() {
-				var el = self.getUIElement(section_id);
-				var hash = normalizeVKJoinHash(field.value);
-				var trouble = hashProblem(hash);
-				var list = el ? el.getValue() : null;
-
-				if (trouble)
-					return complain(trouble);
-
-				list = (Array.isArray(list) ? list : []).filter(function(h) {
-					return h != null && h !== '';
-				});
-				if (list.indexOf(hash) !== -1)
-					return complain(_('This hash is already in the list.'));
-
-				list.push(hash);
-				if (el)
-					el.setValue(list);
-				field.value = '';
-				accept();
-			}
-
-			field.addEventListener('input', accept);
-
-			/* Inline rather than a flex row: both are inline-block already, so
-			   they line up beside each other on their own, and the input keeps
-			   the width the theme gave it instead of being stretched to fill. */
-			return E('div', {}, [
-				node,
-				E('div', { 'style': 'margin-top:.5em' }, [
-					field,
-					' ',
-					E('button', {
-						'class': 'cbi-button cbi-button-add',
-						'click': function(ev) { ev.preventDefault(); add(); }
-					}, [ _('Add hash') ])
-				]),
-				problem
-			]);
+			widget.addItem = function(dl, value, text, flash) {
+				return addItem.call(this, dl, normalizeVKJoinHash(value), text, flash);
+			};
+			return node;
 		};
 
 		o = s.taboption('qwdtt', form.Value, 'workers', _('Workers'),
 			withDefault(String(WORKERS_PER_GROUP),
-				_('Parallel sessions, started in groups of %d. One VK call sustains three groups before its relay quota starts refusing, so the ceiling is %d per hash and up to %d hashes count towards it: %d, %d, %d, %d. With a VK account it is %d in all, which is about what one account is given.')
-					.format(WORKERS_PER_GROUP, WORKERS_PER_GROUP * GROUPS_PER_HASH,
-						MAX_HASHES,
-						workerCeiling(1, false), workerCeiling(2, false),
-						workerCeiling(3, false), workerCeiling(4, false),
-						ACCOUNT_MAX_WORKERS)));
+				_('Usually a multiple of %d: %d, %d or %d per hash.')
+					.format(WORKERS_PER_GROUP, WORKERS_PER_GROUP,
+						WORKERS_PER_GROUP * 2, WORKERS_PER_GROUP * GROUPS_PER_HASH)));
 		o.datatype = 'uinteger';
 		o.default = String(WORKERS_PER_GROUP);
 
@@ -618,21 +534,14 @@ return network.registerProtocol('qwdtt', {
 		/* Paced per session rather than per relay or in total, because the
 		   session is what VK allocates and meters: several sessions share one
 		   relay address, so a per-address limit would describe nothing VK
-		   sees. The tunnel's ceiling becomes roughly this times the number of
-		   sessions, which is why the hint says so - these are the two settings
-		   here that trade throughput away on purpose. */
-		/* The asymmetry in the hint is the honest part: the upload limit
-		   decides what crosses the relay, while this one can only decide what
-		   is let out of the client afterwards. It still works, because the
-		   flows inside slow down and stop asking for as much - but a round
-		   trip later, and not at all for traffic that ignores congestion. */
-		o = s.taboption('qwdtt', form.Value, 'rate_down', _('Per-session download limit'),
-			withDefault(_('none'), _('Kbit/s each session may receive from its VK relay, times the number of sessions for the tunnel as a whole. This one shapes rather than blocks: a packet is only here because the relay already carried it, so what the limit does is hold it back until the transfers inside the tunnel slow down and stop asking for more. They take a round trip to notice, and traffic that ignores congestion is simply discarded after VK has already counted it. Set the total below what the tunnel downloads unpaced, or the limit and the path fight over the same bytes and you get less than either alone: measured, a total of 1.2 Mbit/s arrived at 91% of budget without a single retransmission, while a total set level with the path made it worse than no limit at all. Left empty, nothing is paced.')));
+		   sees. */
+		o = s.taboption('qwdtt', form.Value, 'rate_down', _('Download speed limit (per session)'),
+			withDefault(_('none'), _('Kbit/s each session may receive from its VK relay.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 
-		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Per-session upload limit'),
-			withDefault(_('none'), _('Kbit/s each session may send to its VK relay, so that a session looks like an ordinary call rather than a bulk transfer. The whole tunnel is limited to this times the number of sessions that come up, and that total is what traffic inside the tunnel has to live within. Keep it above about 1 Mbit/s: below that a transfer cannot hold a window open and goes stop-go rather than slow, so at the usual session count a call-sized 64 to 256 is both plausible and steady. Left empty, nothing is paced.')));
+		o = s.taboption('qwdtt', form.Value, 'rate_up', _('Upload speed limit (per session)'),
+			withDefault(_('none'), _('Kbit/s each session may send to its VK relay.')));
 		o.datatype = 'uinteger';
 		o.placeholder = _('none');
 
@@ -643,7 +552,7 @@ return network.registerProtocol('qwdtt', {
 		   handler would have supplied anyway. */
 
 		o = s.taboption('qwdtt', form.Value, 'go_dns', _('DNS for VK'),
-			withDefault('yandex', _('Resolver the client uses to reach VK, which is not the resolver the tunnel hands out: yandex, cloudflare or google, their doh- variants, or custom:IP and doh:URL.')));
+			withDefault('yandex', _('Resolver for VK: yandex, cloudflare, google, their doh- variants, custom:IP, doh:URL.')));
 		o.default = 'yandex';
 
 		o = s.taboption('qwdtt', form.ListValue, 'obfs', _('Obfuscation'),
@@ -678,10 +587,10 @@ return network.registerProtocol('qwdtt', {
 		   left on the default port meets a listener that will not answer it and
 		   reports the timeout as a password problem. */
 		o = s.taboption('qwdtt', form.Flag, 'no_dtls', _('Disable DTLS'),
-			withDefault(_('off'), _('Direct mode: RTP-obfs AEAD over TURN without DTLS. The server has to be started with -listen-direct, which is a separate listener on a port of its own - set Peer port to that port as well, or the tunnel will not come up.')));
+			withDefault(_('off'), _('Direct mode without DTLS. Needs a -listen-direct server; set Peer port to its port.')));
 
 		o = s.taboption('qwdtt', form.Flag, 'turn_tcp', _('TURN over TCP'),
-			withDefault(_('off'), _('Reach the TURN relay over TCP instead of UDP. Works around UDP throttling on some networks, for example Rostelecom.')));
+			withDefault(_('off'), _('Reach the TURN relay over TCP. Helps where UDP is throttled, e.g. Rostelecom.')));
 
 		/* Last on the tab: it is the only setting here that writes a section of
 		   its own rather than a value. RAW-IP only, and not merely as tidiness:
@@ -691,7 +600,7 @@ return network.registerProtocol('qwdtt', {
 		   tunnel over takes its old routing with it. */
 		o = s.taboption('qwdtt', form.Flag, '_lanroute',
 			_('Route LAN client traffic through this tunnel'),
-			withDefault(_('on'), _('Writes an ordinary routing rule sending traffic from the lan interface to the routing table of this tunnel. Edit it afterwards on Network -> Routing - to send one client or one destination instead of the whole LAN, narrow it there and it stays narrowed; only the table it looks up is kept in step from here.')));
+			withDefault(_('on'), _('Adds a rule routing the LAN into this tunnel; narrow it on Network -> Routing.')));
 		o.rmempty = false;
 		o.depends('mode', 'rawtun');
 		/* So that a table changed under Advanced Settings is carried into the
