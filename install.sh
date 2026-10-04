@@ -161,7 +161,7 @@ install_via_opkg() {
 	# the signer id out of the signature and looks for a file of that name.
 	keyid=$(usign -F -p "$keyfile" 2>/dev/null) ||
 		die "the downloaded trust key is not a usign public key -- is the feed published?"
-	[ -n "$keyid" ] ||
+	echo "$keyid" | grep -qx '[0-9a-f]\{16\}' ||
 		die "the downloaded trust key is not a usign public key -- is the feed published?"
 	mv "$keyfile" "/etc/opkg/keys/$keyid"
 	msg "key id:       $keyid"
