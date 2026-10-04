@@ -664,7 +664,6 @@ func solveCaptchaBySelectedMode(
 	if ctx.Err() != nil {
 		return "", solveErr
 	}
-	lastErr := solveErr
 	if isCaptchaSessionDead(solveErr) {
 		log.Printf("[STREAM %d] [CAPTCHA] AUTO: the captcha session is dead, requesting a new one from VK", streamID)
 		return "", markCaptchaSessionExpired(streamID)
@@ -684,7 +683,6 @@ func solveCaptchaBySelectedMode(
 		if ctx.Err() != nil {
 			return "", solveErr
 		}
-		lastErr = solveErr
 		if isWebViewCaptchaTimeout(solveErr) {
 			log.Printf("[STREAM %d] [CAPTCHA] AUTO: WBV Auto timeout %d/2", streamID, wbvAttempt)
 		} else {
@@ -709,7 +707,7 @@ func solveCaptchaBySelectedMode(
 	if ctx.Err() != nil {
 		return "", solveErr
 	}
-	lastErr = solveErr
+	autoErr := solveErr
 	log.Printf("[STREAM %d] [CAPTCHA] AUTO: final Go v2 error: %v", streamID, solveErr)
 
 	log.Printf("[STREAM %d] [CAPTCHA] AUTO: the automatic chain failed, opening the manual WebView", streamID)
@@ -718,10 +716,7 @@ func solveCaptchaBySelectedMode(
 		log.Printf("[STREAM %d] [CAPTCHA] AUTO: the manual WebView solved the captcha", streamID)
 		return token, nil
 	}
-	if lastErr != nil {
-		return "", fmt.Errorf("automatic captcha chain failed: %w; manual fallback failed: %v", lastErr, solveErr)
-	}
-	return "", solveErr
+	return "", fmt.Errorf("automatic captcha chain failed: %w; manual fallback failed: %v", autoErr, solveErr)
 }
 
 func requestWebViewCaptcha(streamID int, captchaErr *VkCaptchaError, mode string, timeout time.Duration) (string, error) {
