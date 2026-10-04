@@ -219,8 +219,9 @@ func RunSession(
 ) (bool, error) {
 	configDelivered := false
 	// The error that made this session's socket unusable. Written by
-	// Writer/Reader, read at the end of RunSession.
-	var stalePathErr atomic.Value
+	// Writer/Reader, read at the end of RunSession. A pointer rather than an
+	// atomic.Value, which panics when the two store different error types.
+	var stalePathErr atomic.Pointer[error]
 	var firstWrapUp uint32
 	var firstWrapDown uint32
 	var firstWireWrite uint32
@@ -708,7 +709,7 @@ func RunSession(
 			if writeErr != nil {
 				log.Printf("[WORKER #%d] Writer error: %v", sessionID, writeErr)
 				if isStaleBindingError(writeErr) {
-					stalePathErr.Store(writeErr)
+					stalePathErr.Store(&writeErr)
 				}
 				return
 			}
@@ -732,7 +733,7 @@ func RunSession(
 				}
 				log.Printf("[WORKER #%d] Reader error: %v", sessionID, readErr)
 				if isStaleBindingError(readErr) {
-					stalePathErr.Store(readErr)
+					stalePathErr.Store(&readErr)
 				}
 				return
 			}
@@ -777,8 +778,8 @@ func RunSession(
 	// Returning nil here would have the group treat the session as cleanly
 	// closed and wait its usual 5-15s. For a dead local address that is the
 	// worst move available, so surface the error instead.
-	if err, _ := stalePathErr.Load().(error); err != nil {
-		return configDelivered, fmt.Errorf("socket local address is no longer usable: %w", err)
+	if err := stalePathErr.Load(); err != nil {
+		return configDelivered, fmt.Errorf("socket local address is no longer usable: %w", *err)
 	}
 	return configDelivered, nil
 }

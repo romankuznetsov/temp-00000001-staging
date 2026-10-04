@@ -392,8 +392,15 @@ proto_qwdtt_teardown() {
 	# noticed.
 	rm -f "$QWDTT_RUN_DIR/$config".*
 	# The SNAT rule the up-script wrote names an address nothing answers to any
-	# more, so it goes with the tunnel rather than outliving it.
-	uci -q delete "firewall.${config}_snat" || return 0
+	# more, so it goes with the tunnel rather than outliving it. So does the
+	# zone entry it adds for an off-pattern name, or the next interface to take
+	# that name would land in this zone.
+	local changed= n
+	uci -q delete "firewall.${config}_snat" && changed=1
+	for n in $(uci -q get firewall.qwdtt.network); do
+		[ "$n" = "$config" ] && uci -q del_list "firewall.qwdtt.network=$config" && changed=1
+	done
+	[ -n "$changed" ] || return 0
 	uci commit firewall
 	[ ! -x /etc/init.d/firewall ] || /etc/init.d/firewall reload >/dev/null 2>&1
 }

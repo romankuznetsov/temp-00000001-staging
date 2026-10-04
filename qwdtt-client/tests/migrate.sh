@@ -195,5 +195,48 @@ case $log in
 	fail=1 ;;
 esac
 
+# --- the install that predates the packages ---------------------------------
+
+# It kept only `enabled` and the path of a JSON config in uci. The settings come
+# from that file, the password stays in it, and the tunnel takes the name of the
+# device it ran as rather than of the section. jshn is stubbed over key=value.
+QWDTT="qwdtt.main=qwdtt
+qwdtt.main.enabled=1
+qwdtt.main.config=$WORK/config.json"
+ARCHIVE='peer=vpn9.example:56003
+password=p9
+device_id=openwrt-router
+workers=9
+dns=yandex
+no_dtls=0
+turn_tcp=1
+tun_name=qwdtt0
+lan_interface=br-lan'
+json_init() { :; }
+json_load_file() { [ -r "$1" ]; }
+json_select() { :; }
+json_get_var() { eval "$1=\$(printf '%s\n' \"\$ARCHIVE\" | sed -n 's/^$2=//p')"; }
+json_get_values() { eval "$1='hhh iii'"; }
+printf '{}\n' > "$WORK/config.json"
+: > "$NETWORK"
+log=$(. ./qwdtt-client/files/qwdtt.migrate)
+got=$(dump)
+want="network.qwdtt0.config_file=$WORK/config.json
+network.qwdtt0.device_id=openwrt-router
+network.qwdtt0.go_dns=yandex
+network.qwdtt0.hash=hhh iii
+network.qwdtt0.ip4table=51820
+network.qwdtt0.peer_host=vpn9.example
+network.qwdtt0.peer_port=56003
+network.qwdtt0.proto=qwdtt
+network.qwdtt0.turn_tcp=1
+network.qwdtt0.workers=9
+network.qwdtt0=interface
+network.qwdtt0_rule.in=lan
+network.qwdtt0_rule.lookup=51820
+network.qwdtt0_rule.priority=9999
+network.qwdtt0_rule=rule"
+check "the archive's JSON config, converted" "$got" "$(printf '%s\n' "$want" | sort)"
+
 [ "$fail" = 0 ] || exit 1
 echo "qwdtt.migrate: ok"

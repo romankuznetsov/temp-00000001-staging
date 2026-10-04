@@ -70,8 +70,10 @@ uci() {
 		case "$2" in
 		'system.@system[0].zonename') echo "Europe/Moscow" ;;
 		network.*.proto) _s=${2#network.}; cfg "${_s%.proto}" proto ;;
+		firewall.qwdtt.network) echo "${ZONE_NETWORKS:-}" ;;
 		esac ;;
 	delete) echo "deleted: $2" ;;
+	del_list) echo "del_list: $2" ;;
 	esac
 	return 0
 }
@@ -455,11 +457,20 @@ check "a teardown of a tunnel that still exists" "$got" "killed: qwdtt0"
 # is that the teardown asks for all of them rather than the three it used to
 # list, two of which had since been joined by others - including the one
 # holding the WireGuard private key the server issued.
-got=$(proto_qwdtt_teardown gone 2>&1)
+got=$(ZONE_NETWORKS="lan2 wan" proto_qwdtt_teardown gone 2>&1)
 check "a teardown of a section that has been deleted" "$got" "killed: gone
 dropped: gone
 removed: -f $QWDTT_RUN_DIR/gone.*
 deleted: firewall.gone_snat"
+
+# An off-pattern name reaches the zone through its network list, so a deleted
+# tunnel takes its entry with it and leaves the others.
+got=$(ZONE_NETWORKS="lan2 gone wan" proto_qwdtt_teardown gone 2>&1)
+check "a deleted tunnel leaves the zone's network list" "$got" "killed: gone
+dropped: gone
+removed: -f $QWDTT_RUN_DIR/gone.*
+deleted: firewall.gone_snat
+del_list: firewall.qwdtt.network=gone"
 
 # --- the option list the uci-defaults script reads --------------------------
 

@@ -88,6 +88,8 @@ endef
 define Package/qwdtt-client/prerm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+# opkg runs prerm and postrm on an upgrade as well, with PKG_UPGRADE=1.
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
 
 for tunnel in $$(uci -q show network | \
 	sed -n "s/^network\.\([^.=]*\)\.proto='qwdtt'$$/\1/p"); do
@@ -113,6 +115,7 @@ endef
 define Package/qwdtt-client/postrm
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
+[ "$${PKG_UPGRADE}" = 1 ] && exit 0
 
 for section in $$(uci -q show firewall | \
 	sed -n "s/^firewall\.\([^.=]*_snat\)\.src='qwdtt'$$/\1/p"); do
