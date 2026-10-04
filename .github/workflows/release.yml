@@ -384,7 +384,7 @@ jobs:
           {
             echo "### Packages"
             echo
-            echo "Install **qwdtt-client** package for your target and packages from the last **All** row."
+            echo "Install \`qwdtt-client\` package for your target and packages from the last **All** row."
             echo
             echo "<table>"
             echo "<tr><th>Target</th><th>IPK</th><th>APK (OpenWrt 25.12+)</th></tr>"
