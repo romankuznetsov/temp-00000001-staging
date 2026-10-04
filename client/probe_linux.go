@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -110,6 +111,9 @@ func (p *tunnelProbe) drain(ctx context.Context) {
 		}
 		_ = p.conn.SetReadDeadline(time.Now().Add(time.Second))
 		n, src, err := p.conn.ReadFromIP(buf)
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
 			continue
 		}
