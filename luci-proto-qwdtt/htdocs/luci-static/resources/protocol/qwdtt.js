@@ -388,9 +388,9 @@ return network.registerProtocol('qwdtt', {
 		   WireGuard mode this interface has no device, no address and no
 		   routes, so the routing flags below go away with it. */
 		o = s.taboption('qwdtt', form.ListValue, 'mode', _('Mode'),
-			withDefault('rawtun', _('rawtun: this interface is the tunnel. wireguard: a relay for a WireGuard interface.')));
-		o.value('rawtun', 'rawtun');
-		o.value('wireguard', 'wireguard');
+			_('Default: %s.').format('RAW'));
+		o.value('rawtun', 'RAW');
+		o.value('wireguard', 'WireGuard');
 		o.default = 'rawtun';
 
 		/* The rule below is declared with depends('mode', 'rawtun'), and going

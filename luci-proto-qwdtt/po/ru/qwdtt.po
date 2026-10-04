@@ -23,9 +23,6 @@ msgstr "Имя этого интерфейса длиннее 15 символо�
 msgid "Mode"
 msgstr "Режим"
 
-msgid "rawtun: this interface is the tunnel. wireguard: a relay for a WireGuard interface."
-msgstr "rawtun: интерфейс сам является туннелем. wireguard: ретранслятор для WireGuard."
-
 msgid "Peer host"
 msgstr "Адрес сервера"
 
