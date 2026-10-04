@@ -381,7 +381,12 @@ jobs:
             printf 'N/A'
           }
 
+          # GitHub's own notes pick the previous release; only their changelog line is kept.
+          changelog=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+                        -f tag_name="$TAG" --jq .body | grep '^\*\*Full Changelog\*\*' || true)
+
           {
+            [ -z "$changelog" ] || printf '%s\n\n' "$changelog"
             echo "### Packages"
             echo
             echo "Install \`qwdtt-client\` package for your target and packages from the last **All** row."
