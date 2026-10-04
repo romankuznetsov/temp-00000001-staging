@@ -2,9 +2,8 @@
 # Exercises the /etc/config/qwdtt -> /etc/config/network conversion away from a
 # router. It runs once, on a router that already carries traffic, and there is
 # no second chance at it: a tunnel that comes back without its routing rule
-# carries nothing, and one that comes back without its unreachable route
-# releases everything to the WAN the moment it drops. So the whole resulting
-# config is asserted, key by key, against a uci stubbed out over a text file.
+# carries nothing. So the whole resulting config is asserted, key by key,
+# against a uci stubbed out over a text file.
 #
 # Run from the repository root: sh qwdtt-client/tests/migrate.sh
 set -u

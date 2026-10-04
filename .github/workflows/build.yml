@@ -1,16 +1,4 @@
-# One repository; the build here produces the OpenWrt packages that wrap the Go
-# client. Publishing is release.yml, which calls this workflow and acts on the
-# artifacts it leaves.
-#
-# The jobs are split by cost rather than by product.
-#
-#   check              ~1 min, when code changed
-#   packages           ~8 min, when a package directory changed
-#   client-packages    ~6 min per architecture, only when publishing
-#
-# Every SDK job opens by downloading and unpacking the SDK from upstream's
-# image, which is most of its wall clock; the rest is the kernel build that
-# +kmod-tun pulls in.
+# Builds the OpenWrt packages. Publishing is release.yml, which calls this workflow.
 ---
 name: Build
 
@@ -39,12 +27,8 @@ on:
 permissions:
   contents: read
 
-# Two pushes in quick succession would otherwise pay for two full builds, and
-# the first result is stale the moment the second lands. Tag runs opt out of
-# cancellation entirely, since a half-run release job is worse than a redundant
-# one. github.workflow is the CALLER's name inside a called workflow, which is
-# what separates a standalone Build from the one a Release called: without it
-# both land in the same group on a push to main and cancel each other.
+# github.workflow is the caller's name inside a called workflow: without it, a standalone Build
+# and the one Release calls share a group on a push to main and cancel each other.
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -53,10 +37,6 @@ env:
   GO_VERSION: "1.26.x"
 
 jobs:
-  # Most of the pipeline is wasted on a docs-only change. Diff it here and let
-  # the build jobs gate on the result: `code` guards the Go check and client
-  # build, `packages` guards the SDK packages. Tags and dispatches always
-  # build, so a release is never gated on a diff.
   changes:
     name: changes
     runs-on: ubuntu-latest
@@ -86,16 +66,7 @@ jobs:
             exit 0
           fi
 
-          # The merge of that same bump lands here as a push, and its diff is
-          # both Makefiles, so the gate below would build the packages a
-          # second time. release.yml runs on this very push and calls this
-          # workflow with full: true, which is the copy that gets published --
-          # 35 minutes of the two packages jobs, for artifacts nobody reads.
-          #
-          # An unreleased version in the tree is exactly the condition
-          # release.yml uses to decide it is publishing, so ask the same
-          # question. The called run never reaches here: full: true returns
-          # above.
+          # The Release run on this same push builds and publishes this version; building here would duplicate it.
           if [ "${{ github.event_name }}" = "push" ] &&
              [ "${{ github.ref }}" = "refs/heads/main" ]; then
             v=$(sed -n 's/^PKG_VERSION:=[[:space:]]*//p' qwdtt-client/Makefile |
@@ -108,8 +79,6 @@ jobs:
             fi
           fi
 
-          # main takes pull requests only, so gating pushes alone would gate
-          # almost nothing: every change now arrives as a pull request.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
             head="${{ github.event.pull_request.head.sha }}"
@@ -139,16 +108,12 @@ jobs:
           fi
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
 
-          # A version bump is reproved by the version job and rebuilt by the
-          # release the merge starts, so building it here spent 18 minutes for
-          # nothing. Asked of the diff, not the branch name: the name is a
-          # convention, and anything else riding on one would skip every check.
+          # A version-only bump is rebuilt by the release its merge starts. Decided by the diff,
+          # not the branch name, so nothing else can ride on the name.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             case "$HEAD_REF" in
             release/v*)
-              # || true, because grep -c exits 1 when it counts nothing, and
-              # the step runs under bash -e: the one case this gate exists for
-              # would have failed the job instead of taking the fast path.
+              # || true: grep -c exits 1 on a zero count, and the step runs under bash -e.
               others=$(echo "$changed" |
                 grep -vE '^(qwdtt-client|luci-proto-qwdtt)/Makefile$' | grep -c . || true)
               if [ "$others" = 0 ]; then
@@ -166,9 +131,8 @@ jobs:
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
-          # Wider than the package directories: the feed generator, its target
-          # map and the installer are only exercised by a release otherwise, so
-          # a break in them surfaces with a tag pushed rather than on the PR.
+          # Wider than the package directories: the feed scripts, target map and installer
+          # are otherwise only exercised by a release.
           if echo "$changed" |
              grep -qE '^(luci-proto-qwdtt|qwdtt-client|assets|keys)/|^\.github/(workflows|scripts)/|^\.github/openwrt-targets\.json$|^(install|build)\.sh$'; then
             echo "packages=true" >> "$GITHUB_OUTPUT"
@@ -211,41 +175,23 @@ jobs:
         working-directory: client
         run: go vet -tags=openwrt ./...
 
-      # -short skips the one test that resolves login.vk.ru over live DoH,
-      # which made a unit gate depend on three resolvers and on VK answering.
-      # It still runs without the flag, for anyone who wants that check.
+      # -short skips the live DoH test against login.vk.ru, so the gate does not depend on VK.
       - name: test
         working-directory: client
         run: go test -tags=openwrt -short ./...
 
-      # The protocol handler decides what the client is started with and
-      # which configurations are refused, the conversion runs once on a router
-      # that already carries traffic, and every way either can be wrong is
-      # quiet. Nothing else here runs shell from the packages, so this is where
-      # it goes.
       - name: netifd protocol handler
         run: sh qwdtt-client/tests/proto.sh
 
       - name: config conversion
         run: sh qwdtt-client/tests/migrate.sh
 
-      # An untranslated string does not fail: LuCI falls back to the English
-      # source, and the page still renders. The users this project has are
-      # Russian-speaking, so it has to be caught here or not at all.
       - name: LuCI translations
         run: node luci-proto-qwdtt/tests/po.js
 
-      # The routing flags write sections the operator is invited to edit by
-      # hand afterwards, and a save that quietly undoes that edit looks like
-      # nothing at all until the traffic goes the wrong way.
       - name: LuCI routing options
         run: node luci-proto-qwdtt/tests/options.js
 
-      # The status page reads what the client and the up-script leave in
-      # /var/run/qwdtt, and a file written under a name its backend does not
-      # know is simply never read: the page shows a dash and says nothing is
-      # wrong. That is how a wireguard-mode tunnel came to report no workers
-      # at all while carrying traffic.
       - name: LuCI status backend
         run: node luci-proto-qwdtt/tests/runtime.js
 
@@ -260,10 +206,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Two entries because of the package FORMAT rather than the
-        # architecture: OpenWrt replaced opkg with apk, so 24.10 emits .ipk and
-        # 25.12 emits .apk from identical sources. Both packages here set
-        # PKGARCH:=all, so one architecture serves every target.
+        # One entry per package format (24.10 builds .ipk, 25.12 .apk); both packages are PKGARCH:=all.
         arch: ${{ fromJSON(needs.arches.outputs.noarch) }}
 
     steps:
@@ -287,35 +230,20 @@ jobs:
         run: go build -tags=openwrt -trimpath -ldflags="-s -w" -o ../qwdtt-client/files/qwdtt-client .
 
       - name: Build with the OpenWrt SDK
-        # Pinned, not @main. The action's entrypoint decides how the feed is
-        # wired, which packages are built and where the output lands, so
-        # tracking its default branch means an upstream commit can change this
-        # build without anything here changing. build.sh pins the same tag,
-        # because a green local build and a green CI run are only the same
-        # statement while both run the same entrypoint.
+        # Pinned, not @main: the entrypoint decides how the feed is wired and what is built.
+        # build.sh pins the same tag.
         uses: openwrt/gh-action-sdk@v11
         env:
           CONTAINER: ghcr.io/openwrt/sdk
           ARCH: ${{ matrix.arch }}
           FEEDNAME: qwdtt
-          # qwdtt-client is not named here, but luci-proto-qwdtt depends on
-          # it, so the SDK builds it anyway. The upload below drops it:
-          # client-packages is what publishes it, once per architecture.
-          #
-          # Only source packages are named. PACKAGES becomes
-          # `make package/<name>/download`, so each entry must be a package
-          # DIRECTORY -- and luci-i18n-qwdtt-ru is not one. luci.mk defines it
-          # from the package's own Makefile by scanning po/*, so listing it
-          # fails with "No rule to make target". Building luci-proto-qwdtt
-          # emits it; the next step asserts that.
+          # Package directories only: luci-i18n-qwdtt-ru is generated by luci.mk from po/, so naming it
+          # fails with "No rule to make target". qwdtt-client is built anyway as a dependency.
           PACKAGES: luci-proto-qwdtt
 
       - name: Show what was produced
         run: |
-          # The parentheses matter. Without them find reads this as
-          #   ( -name '*.ipk' ) OR ( -name '*.apk' AND -print )
-          # because -o binds looser than the implicit AND, so an action written
-          # after the -o applies only to the second branch.
+          # The parentheses matter: -o binds looser than the implicit AND, so -print would apply to *.apk only.
           find bin -type f \( -name '*.ipk' -o -name '*.apk' \) -print | sort
           for want in luci-proto-qwdtt luci-i18n-qwdtt-ru; do
             n=$(find bin/packages -type f \
@@ -328,15 +256,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.arch }}
-          # Only our own. The SDK also builds ~100 dependency packages into
-          # bin/, and a wider glob would bury the files anybody wants.
+          # Only our own: the SDK also builds ~100 dependency packages into bin/.
           path: |
             bin/packages/*/qwdtt/*.ipk
             bin/packages/*/qwdtt/*.apk
             !bin/packages/*/qwdtt/qwdtt-client*
           if-no-files-found: error
-          # A re-run sends the same artifact names again; without this the
-          # second attempt fails with a 409. Same on the client-package upload.
+          # A re-run uploads the same names again; without this it fails with a 409.
           overwrite: true
 
       - name: Upload build log on failure
@@ -380,8 +306,7 @@ jobs:
 
           {
             printf 'matrix=%s\n' "$(printf '%s\n' "$list" | jq -cs .)"
-            # The two arch-independent packages build once per format, and
-            # x86_64 is simply the architecture that serves as the host for it.
+            # The arch-independent packages build once per format, on x86_64.
             printf 'noarch=%s\n' "$(printf '[\"x86_64-%s\",\"x86_64-%s\"]' "$ipk" "$apk")"
             printf 'ipk_sdk=x86_64-%s\n' "$ipk"
             printf 'apk_sdk=x86_64-%s\n' "$apk"
@@ -390,10 +315,8 @@ jobs:
   client-packages:
     name: client package ${{ matrix.sdk }}
     needs: [check, arches]
-    # Whenever something is being published, plus manual dispatch so a
-    # packaging change can be proven across every architecture without
-    # spending a version to find out. A release triggered by a merge is a
-    # push to main, so the ref says nothing: the caller has to.
+    # A release from a merge is a push to main, so only the caller's full input says it is publishing.
+    # Dispatch too, to prove packaging on every architecture without spending a version.
     if: >-
       inputs.full ||
       startsWith(github.ref, 'refs/tags/v') ||
